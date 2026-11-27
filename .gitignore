@@ -1,0 +1,7 @@
+build/
+build-*/
+build_cli/
+__pycache__/
+*.pyc
+Tools/sim/vt_core.so
+.DS_Store
