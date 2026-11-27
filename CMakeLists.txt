@@ -27,6 +27,8 @@ set(TT_ENGINE_SOURCES
 
 add_library(tt_engine STATIC ${TT_ENGINE_SOURCES})
 target_include_directories(tt_engine PUBLIC Source/engine Source/engine/pffft)
+# PFFFT is compiled into the engine: no dllimport/dllexport on Windows
+target_compile_definitions(tt_engine PUBLIC PFFFT_STATIC_DEFINE)
 set_target_properties(tt_engine PROPERTIES POSITION_INDEPENDENT_CODE ON)
 if(MSVC)
     target_compile_options(tt_engine PRIVATE /O2 /fp:precise)
