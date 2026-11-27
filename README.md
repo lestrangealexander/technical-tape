@@ -10,8 +10,10 @@ measured wow and flutter, and a saturation curve that keeps going past the hotte
 
 **Status:** the three ATR models (3¾, 7½ and 15 ips) are built from the real captures, measured
 from −30 VU to about +35 VU: the hot passes went onto the tape 22½ dB above the normal ones, so the
-whole drive range of the INPUT knob is measured rather than extrapolated. MAXELL is greyed out until
-its captures are in. MENU > Tape models shows what each model is.
+whole drive range of the INPUT knob is measured rather than extrapolated. A treble stage lets the
+highs saturate on their own level, as on tape, so busy material at the slower speeds behaves like
+the machine. MAXELL is greyed out until its captures are in. MENU > Tape models shows what each
+model is.
 
 The Mac build is AU and VST3, universal for Apple Silicon and Intel, and needs macOS 11 or later.
 The Windows build is a 64-bit VST3 for Windows 10 or 11. Builds are for personal use, so they are

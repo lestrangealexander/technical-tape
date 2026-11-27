@@ -235,7 +235,7 @@ public:
                             18.0f, 2.0f };
     RoundButton ag { "AG", true };
     ParamKnob input { "INPUT", 46.0f, 6.0f, true, 86.0f, 13.0f, 2.6f };
-    ParamKnob output { "OUTPUT", 40.0f, 5.0f, true, 86.0f, 13.0f, 2.6f };
+    ParamKnob output { "OUTPUT", 46.0f, 6.0f, true, 86.0f, 13.0f, 2.6f };   // the same size as INPUT
     ValueEntry entry;
 
     struct ClickAway final : juce::MouseListener

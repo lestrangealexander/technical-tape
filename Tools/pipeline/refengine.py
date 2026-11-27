@@ -8,6 +8,9 @@ Timeline (base-rate samples, A = look-ahead, D = OS latency, d0 = kernel pre-del
   b1(t)     = vp(t - D)
   bn(t)     = down_M( Lin * T_n(up_M(vp) / Lin) )(t)         n = 2..K, delayed to D in total
   y(t)      = refPeak * sum_n sum_r w_nr(L(t)) (B_nr * bn)(t),  L(t) = Lraw(t - D - d0 + A - 1)
+Treble stage (models with one): Lhf = the same detector on W * (x * drive / refPeak), W the treble
+high-pass; the treble branch's kernels convolve b1 like the fundamental's, weighted by w_r(Lhf(t)) with
+Lhf delayed exactly like L.
 """
 from __future__ import annotations
 
@@ -132,8 +135,13 @@ def process(model, x, fs=48000.0, drive_db=0.0, factor=8, max_order=None, auto_g
     K = len(model.branches) if max_order is None else min(max_order, len(model.branches))
     b = cheb_inputs(vp, Lraw, A, model.margin, K, factor)
     y = np.zeros(len(v))
-    for br in model.branches[:K]:
-        w = branch_weights(br, model, Lw)
+    jobs = [(br, Lw) for br in model.branches[:K]]
+    if getattr(model, 'treble', None) is not None and model.treble_fc > 0:
+        hb, ha = ds.treble_hp(model.treble_fc, fs)
+        Lhf = detector(ss.lfilter(hb, ha, v), A, fs, rel)
+        jobs.append((model.treble, np.concatenate([np.full(shift, Lhf[0]), Lhf])[:len(Lhf)]))
+    for br, Lsrc in jobs:
+        w = branch_weights(br, model, Lsrc)
         for r in range(br.kernels.shape[0]):
             if not np.any(w[:, r]):
                 continue

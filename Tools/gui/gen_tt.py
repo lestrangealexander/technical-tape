@@ -299,7 +299,7 @@ def base_svg(needles):
     o.append(vu_meter(*VU_IN, needles[0], 'INPUT VU'))
     o.append(vu_meter(*VU_OUT, needles[1], 'OUTPUT VU'))
     o.append(knob(REEL_L[0], ROW_Y, 46, 6, 1 / 3, 'INPUT'))     # under the supply reel
-    o.append(knob(VU_OUT[0], ROW_Y, 40, 5, 0, 'OUTPUT'))      # under the output meter
+    o.append(knob(VU_OUT[0], ROW_Y, 46, 6, 0, 'OUTPUT'))      # under the output meter, the same size as INPUT
     o.append('</svg>')
     return '\n'.join(o)
 

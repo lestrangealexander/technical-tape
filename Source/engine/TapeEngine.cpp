@@ -72,6 +72,11 @@ void Core::Channel::reset()
     for (auto& cv : conv) cv.reset();
     for (auto& b : bIn) std::fill (b.begin(), b.end(), 0.0f);
     std::fill (lw.begin(), lw.end(), 0.0f);
+    trebleHp.reset();
+    detHf.reset();
+    lrawHf.reset();
+    convHf.reset();
+    std::fill (lwHf.begin(), lwHf.end(), 0.0f);
     n = 0;
 }
 
@@ -110,10 +115,15 @@ void Core::allocate (int numChannels, const Limits& l)
             }
         }
         c.lw.assign ((size_t) B, 0.0f);
+        c.detHf.prepare (80, 0.9f);
+        c.lrawHf.prepare (2048);
+        c.convHf.prepare (B, l.maxPartitions);
+        c.lwHf.assign ((size_t) B, 0.0f);
     }
     for (auto& o : ordersAtRate) o.reserve (32);
     weights.assign ((size_t) l.maxCount * (size_t) B, 0.0f);
     ldb.assign ((size_t) B, 0.0f);
+    ldbHf.assign ((size_t) B, 0.0f);
     yacc.allocate ((size_t) B);
 }
 
@@ -152,6 +162,12 @@ void Core::configure (const PreparedModel* model, int osFactor)
         }
         for (const auto& b : pm->branches)
             c.conv[b.order].setBranch (&b);
+        if (pm->hasTreble)
+        {
+            c.trebleHp.setCoefficients (pm->trebleB, pm->trebleA);
+            c.detHf.prepare (pm->lookAhead, pm->releaseCoef);
+            c.convHf.setBranch (&pm->treble);
+        }
     }
     reset();
 }
@@ -191,8 +207,9 @@ void Core::handleRate (Channel& c, int ri, float s, int i) noexcept
     }
 }
 
-void Core::computeWeights (const PreparedModel::Branch& b, const float* L, int& kmin, int& kmax) noexcept
+void Core::computeWeights (const PreparedModel::Branch& b, const float* L, const float* ldbIn, int& kmin, int& kmax) noexcept
 {
+    const float* lev = ldbIn;            // the levels in dB this branch is indexed by
     const int nl = pm->numLevels;
     const int n = b.order;
     const float L0 = std::pow (10.0f, pm->level0Db / 20.0f);
@@ -204,7 +221,7 @@ void Core::computeWeights (const PreparedModel::Branch& b, const float* L, int& 
         kmax = R - 1;
         for (int i = 0; i < B; ++i)
         {
-            const float idx = (ldb[(size_t) i] - pm->level0Db) / pm->levelStepDb;
+            const float idx = (lev[(size_t) i] - pm->level0Db) / pm->levelStepDb;
             if (idx < 0.0f)
             {
                 const float s = n > 1 ? std::pow (L[i] / L0, (float) (n - 1)) : 1.0f;
@@ -235,7 +252,7 @@ void Core::computeWeights (const PreparedModel::Branch& b, const float* L, int& 
     kmax = -1;
     for (int i = 0; i < B; ++i)
     {
-        const float idx = (ldb[(size_t) i] - pm->level0Db) / pm->levelStepDb;
+        const float idx = (lev[(size_t) i] - pm->level0Db) / pm->levelStepDb;
         int lo, hi;
         if (idx < 0.0f) { lo = hi = 0; }
         else if (idx > (float) (nl - 1)) { lo = hi = nl - 1; }
@@ -252,7 +269,7 @@ void Core::computeWeights (const PreparedModel::Branch& b, const float* L, int& 
         std::fill_n (w + (size_t) k * (size_t) B, B, 0.0f);
     for (int i = 0; i < B; ++i)
     {
-        const float idx = (ldb[(size_t) i] - pm->level0Db) / pm->levelStepDb;
+        const float idx = (lev[(size_t) i] - pm->level0Db) / pm->levelStepDb;
         if (idx < 0.0f)
         {
             w[(size_t) i] += n > 1 ? std::pow (L[i] / L0, (float) (n - 1)) : 1.0f;
@@ -328,27 +345,42 @@ void Core::processBlock (int ch, const float* x, float* y) noexcept
             }
         }
         c.lw[(size_t) i] = c.lraw.at ((double) (c.n - shiftLw));
+        if (pm->hasTreble)
+        {
+            // the treble detector: the same look-ahead detector, hearing only the highs
+            c.lrawHf.push (c.detHf.process (c.trebleHp.process (x[i] * invRefPeak)));
+            c.lwHf[(size_t) i] = c.lrawHf.at ((double) (c.n - shiftLw));
+        }
         ++c.n;
     }
     for (int i = 0; i < B; ++i)
         ldb[(size_t) i] = 20.0f * std::log10 (c.lw[(size_t) i]);
     yacc.clear();
     for (const auto& b : pm->branches)
+        runBranch (c.conv[b.order], b, c.bIn[b.order].data(), c.lw.data(), ldb.data());
+    if (pm->hasTreble)
     {
-        auto& cv = c.conv[b.order];
-        cv.pushBlock (c.bIn[b.order].data(), *fft);
-        int kmin = 0, kmax = -1;
-        computeWeights (b, c.lw.data(), kmin, kmax);
-        for (int k = kmin; k <= kmax; ++k)
-        {
-            const float* w = weights.data() + (size_t) k * (size_t) B;
-            bool any = false;
-            for (int i = 0; i < B && ! any; ++i) any = w[i] != 0.0f;
-            if (any) cv.addKernel (k, w, yacc.data(), *fft);
-        }
+        for (int i = 0; i < B; ++i)
+            ldbHf[(size_t) i] = 20.0f * std::log10 (c.lwHf[(size_t) i]);
+        runBranch (c.convHf, pm->treble, c.bIn[1].data(), c.lwHf.data(), ldbHf.data());
     }
     const float g = pm->refPeak;
     for (int i = 0; i < B; ++i) y[i] += yacc[(size_t) i] * g;
+}
+
+void Core::runBranch (BranchConvolver& cv, const PreparedModel::Branch& b, const float* in, const float* L,
+                      const float* Ldb) noexcept
+{
+    cv.pushBlock (in, *fft);
+    int kmin = 0, kmax = -1;
+    computeWeights (b, L, Ldb, kmin, kmax);
+    for (int k = kmin; k <= kmax; ++k)
+    {
+        const float* w = weights.data() + (size_t) k * (size_t) B;
+        bool any = false;
+        for (int i = 0; i < B && ! any; ++i) any = w[i] != 0.0f;
+        if (any) cv.addKernel (k, w, yacc.data(), *fft);
+    }
 }
 
 //==============================================================================
@@ -612,13 +644,15 @@ void TapeEngine::prepare (double sampleRate, int, int channels)
     float maxDelay = 20e-6f;
     for (const auto* m : models)
     {
-        for (const auto& b : m->branches)
+        auto room = [&] (const ModelData::Branch& b)
         {
             const int len = (int) std::ceil ((double) b.length * fs / m->sampleRate);
             lim.maxOrder = std::max (lim.maxOrder, b.order);
             lim.maxPartitions = std::max (lim.maxPartitions, (len + B - 1) / B);
             lim.maxCount = std::max (lim.maxCount, b.count);
-        }
+        };
+        for (const auto& b : m->branches) room (b);
+        if (m->hasTreble()) room (m->treble);
         lim.maxPemp = std::max (lim.maxPemp, (int) std::lround (256.0 * fs / 48000.0));
         flutterSpecs.push_back (Flutter::makeSpec (*m));
         maxDelay = std::max (maxDelay, m->flutterMaxDelay);

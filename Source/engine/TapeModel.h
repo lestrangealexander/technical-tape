@@ -38,6 +38,12 @@ struct ModelData
     };
     std::vector<Branch> branches;
 
+    // treble stage (version 3 models that have one): the treble share of the fundamental, indexed by a
+    // second detector that hears only the highs through a high-pass at trebleFc
+    float trebleFc = 0.0f;
+    Branch treble;
+    bool hasTreble() const noexcept { return trebleFc > 0.0f && treble.count > 0; }
+
     std::vector<std::pair<float, float>> flutterPeaks;   // Hz, RMS delay (s)
     std::vector<std::pair<float, float>> flutterCont;    // Hz, one-sided PSD of the delay (s^2/Hz)
     float flutterMaxDelay = 0.0f;                         // s
@@ -89,6 +95,10 @@ struct PreparedModel
     int maxOrder = 1;
     int maxPartitions = 0;
     int maxCount = 0;
+
+    bool hasTreble = false;
+    Branch treble;                       // order 1, indexed by the treble detector
+    double trebleB[3] = { 1.0, 0.0, 0.0 }, trebleA[3] = { 1.0, 0.0, 0.0 };
 
     static std::shared_ptr<const PreparedModel> build (const ModelData& m, double fs, int block);
 };

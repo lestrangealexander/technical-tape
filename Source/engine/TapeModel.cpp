@@ -1,5 +1,6 @@
 // Technical Tape engine — model files (.ttm) and their preparation for a host sample rate
 #include "TapeModel.h"
+#include "Dsp.h"
 
 #include <atomic>
 #include "Design.h"
@@ -90,7 +91,7 @@ std::string parseModel (const void* data, size_t size, ModelData& out)
     if (size < 8 || std::memcmp (b, "TTM1", 4) != 0) return "not a Technical Tape model";
     Reader top { b, size, 4 };
     const auto version = top.get<uint32_t>();
-    if (version != 2) return "unsupported model version " + std::to_string (version);
+    if (version != 2 && version != 3) return "unsupported model version " + std::to_string (version);
     static std::atomic<uint64_t> serials { 0 };
     bool haveHead = false;
     out = ModelData();
@@ -129,7 +130,7 @@ std::string parseModel (const void* data, size_t size, ModelData& out)
             r.floats (out.pempFreqs, (size_t) n);
             r.floats (out.pempDb, (size_t) n);
         }
-        else if (t == "BRCH")
+        else if (t == "BRCH" || t == "BRHF")
         {
             if (! haveHead) return "branch before header";
             ModelData::Branch br;
@@ -138,12 +139,19 @@ std::string parseModel (const void* data, size_t size, ModelData& out)
             br.count = r.get<int32_t>();
             br.length = r.get<int32_t>();
             if (br.order < 1 || br.order > 31 || br.count <= 0 || br.length <= 0 || br.length > (1 << 20)
-                || (br.mode == 1 && br.count != out.numLevels) || (br.mode != 0 && br.mode != 1))
+                || (br.mode == 1 && br.count != out.numLevels) || (br.mode != 0 && br.mode != 1)
+                || (t == "BRHF" && br.order != 1))
                 return "bad branch";
             r.halves (br.kernels, (size_t) br.count * (size_t) br.length);
             if (br.mode == 0)
                 r.floats (br.weights, (size_t) out.numLevels * (size_t) br.count);
-            out.branches.push_back (std::move (br));
+            if (t == "BRCH") out.branches.push_back (std::move (br));
+            else out.treble = std::move (br);
+        }
+        else if (t == "TRBL")
+        {
+            out.trebleFc = r.get<float>();
+            if (! (out.trebleFc > 0.0f && out.trebleFc < 0.45f * (float) out.sampleRate)) return "bad treble stage";
         }
         else if (t == "FLUT")
         {
@@ -178,6 +186,7 @@ std::string parseModel (const void* data, size_t size, ModelData& out)
     if (! haveHead) return "no header";
     if (out.branches.empty() || out.branches.front().order != 1) return "no linear branch";
     if (out.pempFreqs.empty()) return "no pre-emphasis";
+    if ((out.trebleFc > 0.0f) != (out.treble.count > 0)) return "incomplete treble stage";
     std::sort (out.branches.begin(), out.branches.end(), [] (const auto& a, const auto& c) { return a.order < c.order; });
     return {};
 }
@@ -209,7 +218,7 @@ std::shared_ptr<const PreparedModel> PreparedModel::build (const ModelData& m, d
 
     RealFft fft (pm->fftSize);
     AlignedBuffer tmp ((size_t) pm->fftSize);
-    for (const auto& b : m.branches)
+    auto prepare = [&] (const ModelData::Branch& b)
     {
         Branch pb;
         pb.order = b.order;
@@ -243,7 +252,15 @@ std::shared_ptr<const PreparedModel> PreparedModel::build (const ModelData& m, d
         pm->maxOrder = std::max (pm->maxOrder, b.order);
         pm->maxPartitions = std::max (pm->maxPartitions, pb.partitions);
         pm->maxCount = std::max (pm->maxCount, pb.count);
-        pm->branches.push_back (std::move (pb));
+        return pb;
+    };
+    for (const auto& b : m.branches)
+        pm->branches.push_back (prepare (b));
+    if (m.hasTreble())
+    {
+        pm->hasTreble = true;
+        pm->treble = prepare (m.treble);
+        Biquad::highPass ((double) m.trebleFc, fs, pm->trebleB, pm->trebleA);
     }
     return pm;
 }

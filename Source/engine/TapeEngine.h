@@ -4,6 +4,7 @@
 //   in -> INPUT -> pre-emphasis estimate -> look-ahead peak detector
 //                                       -> Chebyshev branches (order n at the lowest alias-free rate)
 //                                       -> per-level kernels / basis (partitioned FFT convolution)
+//              -> treble high-pass -> treble detector -> the fundamental's treble share, per level
 //      -> wow & flutter (fractional delay, measured spectrum) -> OUTPUT x auto gain -> out
 // Nothing on the audio thread allocates. Changing tape, speed or oversampling starts a second core that
 // warms up and crossfades in, so there is never a click or a gap.
@@ -79,12 +80,19 @@ private:
         BranchConvolver conv[32];
         std::vector<float> bIn[32];
         std::vector<float> lw;
+        // treble stage
+        Biquad trebleHp;
+        Detector detHf;
+        History lrawHf;
+        BranchConvolver convHf;
+        std::vector<float> lwHf;
         int64_t n = 0;
         void reset();
     };
 
     void handleRate (Channel& c, int ri, float s, int i) noexcept;
-    void computeWeights (const PreparedModel::Branch& b, const float* L, int& kmin, int& kmax) noexcept;
+    void computeWeights (const PreparedModel::Branch& b, const float* L, const float* Ldb, int& kmin, int& kmax) noexcept;
+    void runBranch (BranchConvolver& cv, const PreparedModel::Branch& b, const float* in, const float* L, const float* Ldb) noexcept;
 
     const PreparedModel* pm = nullptr;
     int factor = 8;
@@ -104,7 +112,7 @@ private:
 
     // per-block scratch
     std::vector<float> weights;          // maxCount * B
-    std::vector<float> ldb;
+    std::vector<float> ldb, ldbHf;
     AlignedBuffer yacc;
 };
 

@@ -54,6 +54,43 @@ private:
 };
 
 //==============================================================================
+/** Biquad, transposed direct form II with double state (the treble detector's weighting). */
+class Biquad
+{
+public:
+    void setCoefficients (const double* b, const double* a) noexcept
+    {
+        b0 = b[0]; b1 = b[1]; b2 = b[2]; a1 = a[1]; a2 = a[2];
+    }
+    void reset() noexcept { z1 = z2 = 0.0; }
+    float process (float xf) noexcept
+    {
+        const double x = xf;
+        const double y = b0 * x + z1;
+        z1 = b1 * x - a1 * y + z2;
+        z2 = b2 * x - a2 * y;
+        return (float) y;
+    }
+
+    /** 2nd-order Butterworth high-pass at fc (RBJ form, Q = 1/sqrt 2), as Tools/pipeline/dsp_shared.py. */
+    static void highPass (double fc, double fs, double* b, double* a) noexcept
+    {
+        const double w0 = 2.0 * 3.14159265358979323846 * fc / fs;
+        const double cw = std::cos (w0), alpha = std::sin (w0) / (2.0 * (1.0 / std::sqrt (2.0)));
+        const double a0 = 1.0 + alpha;
+        b[0] = (1.0 + cw) / 2.0 / a0;
+        b[1] = -(1.0 + cw) / a0;
+        b[2] = (1.0 + cw) / 2.0 / a0;
+        a[0] = 1.0;
+        a[1] = -2.0 * cw / a0;
+        a[2] = (1.0 - alpha) / a0;
+    }
+
+private:
+    double b0 = 1.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0, z1 = 0.0, z2 = 0.0;
+};
+
+//==============================================================================
 /** Integer delay line with fixed capacity. */
 class Delay
 {

@@ -9,6 +9,8 @@
         f32 weights[numLevels*count]
           mode 0: a basis of `count` kernels, mixed per level by the weights table
           mode 1: one kernel per detector level (count == numLevels), interpolated directly
+  TRBL  f32 fcHz                                                (version 3, optional: the treble detector)
+  BRHF  as BRCH, order 1: the treble part of the fundamental, indexed by the treble detector's level
   FLUT  i32 nPeaks, (f32 hz, f32 rmsSec)[nPeaks], i32 nCont, (f32 hz, f32 psd s^2/Hz)[nCont], f32 maxDelaySec
   AGTB  i32 n, f32 drive0Db, f32 stepDb, f32 gainDb[n]
   META  UTF-8 JSON (provenance and QC; the engine ignores it)
@@ -21,7 +23,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-VERSION = 2
+VERSION = 3
 
 
 @dataclass
@@ -55,6 +57,8 @@ class Model:
     meta: dict = field(default_factory=dict)
     flags: int = 0
     margin: float = 1.02
+    treble_fc: float = 0.0     # Hz; 0: no treble stage
+    treble: Branch | None = None
 
     def levels_db(self):
         return self.level0_db + self.level_step_db * np.arange(self.num_levels)
@@ -74,7 +78,7 @@ def write(path, m: Model):
                                           m.level_step_db, len(m.branches), m.pre_delay, m.look_ahead_ms,
                                           m.release_ms, m.captured_low_vu, m.captured_high_vu, m.flags, m.margin)))
     out.append(_chunk('PEMP', struct.pack('<i', len(m.pemp_freqs)) + _f32(m.pemp_freqs) + _f32(m.pemp_db)))
-    for b in m.branches:
+    def branch_payload(b):
         r, n = b.kernels.shape
         mode = 1 if b.weights is None else 0
         if mode == 1:
@@ -84,7 +88,14 @@ def write(path, m: Model):
         payload = struct.pack('<iiii', b.order, mode, r, n) + np.asarray(b.kernels, '<f2').tobytes()
         if mode == 0:
             payload += _f32(b.weights)
-        out.append(_chunk('BRCH', payload))
+        return payload
+
+    for b in m.branches:
+        out.append(_chunk('BRCH', branch_payload(b)))
+    if m.treble is not None and m.treble_fc > 0:
+        assert m.treble.order == 1
+        out.append(_chunk('TRBL', struct.pack('<f', m.treble_fc)))
+        out.append(_chunk('BRHF', branch_payload(m.treble)))
     fp, fc = np.asarray(m.flutter_peaks, float).reshape(-1, 2), np.asarray(m.flutter_cont, float).reshape(-1, 2)
     out.append(_chunk('FLUT', struct.pack('<i', len(fp)) + _f32(fp) + struct.pack('<i', len(fc)) + _f32(fc)
                       + struct.pack('<f', m.flutter_max_delay)))
@@ -97,6 +108,7 @@ def write(path, m: Model):
 def read(path) -> Model:
     data = open(path, 'rb').read()
     assert data[:4] == b'TTM1', 'not a Technical Tape model'
+    assert struct.unpack_from('<I', data, 4)[0] in (2, 3), 'unsupported model version'
     pos = 8
     branches, kw = [], {}
     head = None
@@ -111,14 +123,19 @@ def read(path) -> Model:
             k = struct.unpack_from('<i', p)[0]
             a = np.frombuffer(p, '<f4', 2 * k, 4)
             kw['pemp_freqs'], kw['pemp_db'] = a[:k].copy(), a[k:].copy()
-        elif tag == 'BRCH':
+        elif tag in ('BRCH', 'BRHF'):
             order, mode, r, ln = struct.unpack_from('<iiii', p)
             kern = np.frombuffer(p, '<f2', r * ln, 16).reshape(r, ln).astype(np.float32)
             w = None
             if mode == 0:
                 nl = head[2]
                 w = np.frombuffer(p, '<f4', nl * r, 16 + 2 * r * ln).reshape(nl, r).copy()
-            branches.append(Branch(order, kern, w))
+            if tag == 'BRCH':
+                branches.append(Branch(order, kern, w))
+            else:
+                kw['treble'] = Branch(order, kern, w)
+        elif tag == 'TRBL':
+            kw['treble_fc'] = struct.unpack_from('<f', p)[0]
         elif tag == 'FLUT':
             k = struct.unpack_from('<i', p)[0]
             fp = np.frombuffer(p, '<f4', 2 * k, 4).reshape(k, 2).copy()

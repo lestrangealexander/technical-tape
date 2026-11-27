@@ -132,6 +132,24 @@ K_SOS_48K = np.array([[1.53512485958697, -2.69169618940638, 1.19839281085285, 1.
                       [1.0, -2.0, 1.0, 1.0, -1.99004745483398, 0.99007225036621]])
 
 
+def treble_hp(fc, fs):
+    """The treble detector's weighting: a 2nd-order Butterworth high-pass at fc (RBJ form, Q = 1/sqrt 2),
+    (b, a) normalised. Source/engine/Dsp.h computes the same coefficients."""
+    w0 = 2.0 * math.pi * fc / fs
+    cw, alpha = math.cos(w0), math.sin(w0) / (2.0 * (1.0 / math.sqrt(2.0)))
+    a0 = 1.0 + alpha
+    b = np.array([(1.0 + cw) / 2.0, -(1.0 + cw), (1.0 + cw) / 2.0]) / a0
+    a = np.array([1.0, -2.0 * cw / a0, (1.0 - alpha) / a0])
+    return b, a
+
+
+def treble_split(freqs, fc):
+    """Share of the fundamental handed to the treble branch at each frequency: (f/fc)^4 / (1 + (f/fc)^4),
+    the Butterworth high-pass's power response (6 % an octave below fc, 94 % an octave above)."""
+    r4 = (np.asarray(freqs, float) / fc) ** 4
+    return r4 / (1.0 + r4)
+
+
 def k_loudness_db(x):
     y = ss.sosfilt(K_SOS_48K, x)
     return 10 * np.log10(np.mean(y ** 2) + 1e-30)

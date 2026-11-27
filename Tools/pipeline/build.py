@@ -527,13 +527,15 @@ def cheb_rescale(K, mu):
     return R
 
 
-def branch_spectra(levels, Hg, K, pemp_freqs, pemp_db, Lgrid):
+def branch_spectra(levels, Hg, K, pemp_freqs, pemp_db, Lgrid, w_lo=None):
     """Kernel spectra of the Chebyshev branches, (len(Lgrid), K, bins).
 
     Branch n's input is mu*L*T_n(vp / (mu*L)) with L the look-ahead peak envelope of the pre-emphasised
     signal vp. For a sine of pre-emphasised amplitude L this is a mix of pure harmonics, so the kernels
     are the measured harmonic responses taken at the input level that puts the pre-emphasised amplitude
-    at L, divided by the pre-emphasis, then corrected for the margin mu (well conditioned, mu ~ 1)."""
+    at L, divided by the pre-emphasis, then corrected for the margin mu (well conditioned, mu ~ 1).
+    With a treble stage, only the share w_lo of the fundamental's response stays here (the treble branch
+    carries the rest); the margin corrections stay whole, since they belong to the harmonic branches."""
     hp = ds.design_minphase(pemp_freqs, pemp_db, FS, 256)
     Pm = [ss.freqz(hp, worN=np.maximum(FK / m, 0.01), fs=FS)[1] for m in range(1, K + 1)]
     R = cheb_rescale(K, MARGIN)
@@ -549,16 +551,64 @@ def branch_spectra(levels, Hg, K, pemp_freqs, pemp_db, Lgrid):
             P = Pm[m - 1]
             A = L - 20 * np.log10(np.maximum(np.abs(P), 1e-9))
             Hh[m - 1] = _interp_levels(levels, Hg[:, m - 1, :], A, m) / (np.abs(P) * np.exp(1j * m * np.angle(P)))
+        if w_lo is not None:
+            Hh[0] *= w_lo
         out[li] = Tinv @ Hh
     return out, hp
 
 
+# ------------------------------------------------------------------ 4b. the treble stage
+TREBLE = True                         # build models with a treble stage (fitted on the pink noise)
+TREBLE_LEN = 2048                     # the treble branch's kernels (43 ms): the highs' responses are short
+
+
+def treble_fc_candidates(speed):
+    """Crossovers tried for the treble stage: the same recorded wavelengths at every speed (5 and 10 kHz
+    at 15 ips, 2.5 and 5 kHz at 7.5, 1.25 and 2.5 kHz at 3.75)."""
+    s = float(speed) / 15.0
+    return (5000.0 * s, 10000.0 * s)
+
+
+def treble_spectra(levels, Hg, pemp_freqs, pemp_db, Lgrid, fc):
+    """Kernel spectra of the treble branch, (len(Lgrid), bins).
+
+    The tape's highs saturate on their own level (self-erasure), not on the whole signal's. The treble
+    branch carries the share treble_split(f) of the fundamental and is indexed by a second detector that
+    hears only the highs, through the high-pass W. Its input is the pre-emphasised signal, like the
+    fundamental's. A sine at f of level L reads L + |W(f)| dB on the treble detector, so the kernel at
+    treble level lam is the measured fundamental at input level lam - |W(f)| dB, divided by the
+    pre-emphasis: single tones come out exactly as before, whatever fc."""
+    hp = ds.design_minphase(pemp_freqs, pemp_db, FS, 256)
+    P = ss.freqz(hp, worN=np.maximum(FK, 0.01), fs=FS)[1]
+    hb, ha = ds.treble_hp(fc, FS)
+    Wdb = 20 * np.log10(np.maximum(np.abs(ss.freqz(hb, ha, worN=np.maximum(FK, 0.01), fs=FS)[1]), 1e-12))
+    share = ds.treble_split(FK, fc)
+    out = np.zeros((len(Lgrid), len(FK)), complex)
+    for li, lam in enumerate(Lgrid):
+        out[li] = share * _interp_levels(levels, Hg[:, 0, :], lam - Wdb, 1) / P
+    return out
+
+
+def treble_kernels(Khf, e_ref):
+    """Windowed treble kernels (len(Lgrid), TREBLE_LEN) and the energy left outside, dB re the fundamental."""
+    kk = np.roll(np.fft.irfft(Khf, NK, axis=1), PRE_DELAY, axis=1)
+    e_all = np.sum(kk ** 2, axis=1)
+    ln = TREBLE_LEN
+    w = np.ones(ln)
+    w[:12] = 0.5 - 0.5 * np.cos(np.linspace(0, np.pi, 12))
+    b = ln // 8
+    w[-b:] = 0.5 + 0.5 * np.cos(np.linspace(0, np.pi, b))
+    kw = kk[:, :ln] * w[None, :]
+    return kw, float(db10(np.max((e_all - np.sum(kw ** 2, axis=1)) / np.maximum(e_ref, 1e-30))))
+
+
 # ------------------------------------------------------------------ 5. kernels and basis
-def kernels(Kspec, K):
+def kernels(Kspec, K, e_ref=None):
     """Windowed time-domain kernels per order: list of (len(Lgrid), length) arrays, and the worst
-    fraction of energy left outside the window (dB, at the level where it is worst, re the fundamental)."""
+    fraction of energy left outside the window (dB, at the level where it is worst, re the fundamental,
+    or re e_ref per level when given: the whole fundamental, with a treble stage)."""
     res, trunc = [], []
-    e_fund = None
+    e_fund = e_ref
     for n in range(1, K + 1):
         ln = LEN_LINEAR if n == 1 else LEN_HARM
         kk = np.fft.irfft(Kspec[:, n - 1, :], NK, axis=1)
@@ -667,7 +717,8 @@ def auto_gain_table(model, log):
 # ------------------------------------------------------------------ 7. broadband calibration
 BB_RELEASES = (20.0, 40.0, 60.0, 100.0) # detector release times tried against the capture's pink noise, ms
 BB_WINDOW = (1.5, 6.5)                  # seconds of each 8 s pink section that are compared
-BB_ALPHAS = (1.0, 0.5, 0.0)             # shares of P(f) tried first as shared pre-emphasis, then +-0.25 around the best
+BB_ALPHAS = (0.5, 0.25, 0.0)            # shares of P(f) tried first as shared pre-emphasis, then +-0.25 around the best
+                                        # (all of it, 1, never fitted a capture: the highs then over-compress the rest)
 BB_SEARCH_WINDOW = (1.5, 4.0)           # shorter stretches while searching
 BB_SEARCH_RELEASE = 20.0
 BB_BANDS = 1000.0 * 2 ** (np.arange(-13, 11) / 3.0)   # 1/3 octaves, 63 Hz .. 10 kHz
@@ -731,15 +782,24 @@ def build(tape, speed, r0, r6, out_path, log=print, extra_meta=None, broadband=T
     log(f'  pre-emphasis fit: {"used" if pinfo["used"] else "not used (flat)"}, residual {pinfo["residual_db"]:.2f} dB '
         f'vs {pinfo["residual_flat_db"]:.2f} dB flat; P(10k) {np.interp(10000, pf, pdb_iso):+.1f} dB')
 
-    def assemble(pdb, quiet=False):
-        """Everything from the pre-emphasis on: continuation, re-indexing, kernels, branches."""
+    def assemble(pdb, fc=0.0, quiet=False):
+        """Everything from the pre-emphasis on: continuation, re-indexing, kernels, branches; with
+        fc > 0, the treble stage at that crossover."""
         levels_x, Hg_x, xinfo = extrapolate_levels(levels, Hg, K, pf, pdb)
         Lmin = math.floor((levels[0] + min(0.0, pdb.min())) / LEVEL_STEP) * LEVEL_STEP
         Lmax = math.ceil((levels_x[-1] + max(0.0, pdb.max())) / LEVEL_STEP) * LEVEL_STEP
         Lgrid = np.arange(Lmin, Lmax + 1e-6, LEVEL_STEP)
-        Kspec, hp = branch_spectra(levels_x, Hg_x, K, pf, pdb, Lgrid)
-        kern, trunc = kernels(Kspec, K)
-        ref_norm = np.linalg.norm(kern[0], axis=1)
+        w_lo = None if fc <= 0 else 1.0 - ds.treble_split(FK, fc)
+        Kspec, hp = branch_spectra(levels_x, Hg_x, K, pf, pdb, Lgrid, w_lo)
+        Khf = treble_spectra(levels_x, Hg_x, pf, pdb, Lgrid, fc) if fc > 0 else None
+        whole = Kspec[:, 0, :] + (Khf if Khf is not None else 0.0)
+        e_ref = np.sum(np.roll(np.fft.irfft(whole, NK, axis=1), PRE_DELAY, axis=1) ** 2, axis=1)
+        kern, trunc = kernels(Kspec, K, e_ref)
+        ref_norm = np.sqrt(e_ref)
+        treble, trunc_hf = None, None
+        if Khf is not None:
+            khf, trunc_hf = treble_kernels(Khf, e_ref)
+            treble = ttm.Branch(1, khf.astype(np.float32), None)
         branches, modes, errs = [], [], []
         for n in range(1, K + 1):
             bw = basis(kern[n - 1], n, ref_norm)
@@ -757,9 +817,9 @@ def build(tape, speed, r0, r6, out_path, log=print, extra_meta=None, broadband=T
                           captured_high_vu=float(levels[-1]), pemp_freqs=pf.astype(np.float32),
                           pemp_db=pdb.astype(np.float32), branches=branches, flutter_peaks=np.zeros((0, 2)),
                           flutter_cont=np.zeros((0, 2)), flutter_max_delay=0.0, ag_drive0=-18.0, ag_step=1.5,
-                          ag_gain_db=np.zeros(25), meta={})
+                          ag_gain_db=np.zeros(25), meta={}, treble_fc=float(fc), treble=treble)
         return model, dict(levels_x=levels_x, Hg_x=Hg_x, xinfo=xinfo, Lgrid=Lgrid, Kspec=Kspec, trunc=trunc,
-                           modes=modes, errs=errs)
+                           modes=modes, errs=errs, Khf=Khf, trunc_hf=trunc_hf)
 
     # Steady tones fix the kernels, but two things only dense material can decide, because every choice
     # reproduces single tones exactly:
@@ -768,34 +828,41 @@ def build(tape, speed, r0, r6, out_path, log=print, extra_meta=None, broadband=T
     #    the highs saturate on their own). P is scaled by a share alpha, from 1 (all pre-emphasis) to 0.
     #  - the detector's release, which decides how a peak envelope above the RMS loads the saturation.
     # Both are chosen where pink noise through the model matches the capture's own pink-noise sections.
-    alpha = 1.0
+    #  - with a treble stage (section 4b), its crossover, from two candidates at fixed recorded wavelengths.
+    alpha, fc = 1.0, 0.0
     bbinfo = {'release_ms': 60.0}
     sections = broadband_sections(r0, r6, info) if broadband else []
     if sections:
         quick = broadband_sections(r0, r6, info, BB_SEARCH_WINDOW)
         tried_a, best_m = {}, None
 
-        def try_alpha(al):
+        def try_alpha(al, fc_):
             nonlocal best_m
-            m_, p_ = assemble(pdb_iso * al)
-            tried_a[al] = broadband_error(m_, quick, BB_SEARCH_RELEASE, BB_SEARCH_WINDOW)
-            if best_m is None or tried_a[al][0] < tried_a[best_m[0]][0]:
-                best_m = (al, m_, p_)
+            m_, p_ = assemble(pdb_iso * al, fc_)
+            tried_a[(fc_, al)] = broadband_error(m_, quick, BB_SEARCH_RELEASE, BB_SEARCH_WINDOW)
+            if best_m is None or tried_a[(fc_, al)][0] < tried_a[(best_m[1], best_m[0])][0]:
+                best_m = (al, fc_, m_, p_)
 
-        for al in BB_ALPHAS:
-            try_alpha(al)
-        a0 = best_m[0]
-        for al in (a0 - 0.25, a0 + 0.25):
-            if 0.0 <= al <= 1.0 and round(al, 3) not in tried_a:
-                try_alpha(round(al, 3))
-        alpha, model, parts = best_m
-        log(f'  shared pre-emphasis: {", ".join(f"{k:g} -> {v[0]:.2f} dB" for k, v in sorted(tried_a.items()))} '
-            f'(pink noise rms); using {alpha:g} of P, P(10k) {alpha * np.interp(10000, pf, pdb_iso):+.1f} dB')
+        for fc_ in (treble_fc_candidates(speed) if TREBLE else (0.0,)):
+            for al in BB_ALPHAS:
+                try_alpha(al, fc_)
+            a0 = min((k for k in tried_a if k[0] == fc_), key=lambda k: tried_a[k][0])[1]
+            for al in (a0 - 0.25, a0 + 0.25):
+                if 0.0 <= al <= 1.0 and (fc_, round(al, 3)) not in tried_a:
+                    try_alpha(round(al, 3), fc_)
+        alpha, fc, model, parts = best_m
+        for fc_ in sorted({k[0] for k in tried_a}):
+            row = ', '.join(f'{k[1]:g} -> {v[0]:.2f} dB' for k, v in sorted(tried_a.items()) if k[0] == fc_)
+            log(f'  {"treble stage at " + format(fc_ / 1000, "g") + " kHz" if fc_ > 0 else "no treble stage"}, '
+                f'shared pre-emphasis {row} (pink noise rms)')
+        log(f'  using {"the treble stage at " + format(fc / 1000, "g") + " kHz and " if fc > 0 else ""}'
+            f'{alpha:g} of P as shared pre-emphasis, P(10k) {alpha * np.interp(10000, pf, pdb_iso):+.1f} dB'
+            + (f'; treble kernels lose {parts["trunc_hf"]:.1f} dB to their window' if fc > 0 else ''))
         quick_rel = {rel: broadband_error(model, quick, rel, BB_SEARCH_WINDOW) for rel in BB_RELEASES}
         best = pick_release({r: v[0] for r, v in quick_rel.items()})
         err, per = broadband_error(model, sections, best)
-        bbinfo = {'release_ms': best, 'error_db': round(err, 3), 'alpha': alpha,
-                  'alpha_tried': {f'{k:g}': round(v[0], 3) for k, v in sorted(tried_a.items())},
+        bbinfo = {'release_ms': best, 'error_db': round(err, 3), 'alpha': alpha, 'treble_fc_hz': fc,
+                  'tried': {f'{k[0]:g} Hz, {k[1]:g}': round(v[0], 3) for k, v in sorted(tried_a.items())},
                   'sections_vu': [round(s_[0], 1) for s_ in sections],
                   'mean_error_per_section_db': [round(v, 3) for v in per],
                   'release_tried': {str(int(r)): round(v[0], 3) for r, v in quick_rel.items()}}
@@ -805,6 +872,7 @@ def build(tape, speed, r0, r6, out_path, log=print, extra_meta=None, broadband=T
     else:
         model, parts = assemble(pdb_iso)
     pdb = pdb_iso * alpha
+    pinfo['treble_fc_hz'] = fc
     pinfo['shared_fraction'] = alpha
     model.release_ms = float(bbinfo['release_ms'])
     levels_x, Hg_x, xinfo, Lgrid = parts['levels_x'], parts['Hg_x'], parts['xinfo'], parts['Lgrid']
@@ -832,4 +900,5 @@ def build(tape, speed, r0, r6, out_path, log=print, extra_meta=None, broadband=T
     log(f'  auto gain: {g[0]:+.1f} dB at -18, {g[12]:+.2f} dB at 0, {g[-1]:+.1f} dB at +18 drive')
     ttm.write(out_path, model)
     return model, dict(levels=levels, H=H, Hg=Hg, noise=noise, presence=presence, K=K, pemp=(pf, pdb, pinfo),
-                       Lgrid=Lgrid, info=info, Kspec=Kspec, levels_x=levels_x, Hg_x=Hg_x)
+                       Lgrid=Lgrid, info=info, Kspec=Kspec, levels_x=levels_x, Hg_x=Hg_x, Khf=parts.get('Khf'),
+                       treble_fc=fc)
