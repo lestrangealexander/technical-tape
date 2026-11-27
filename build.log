@@ -1,0 +1,139 @@
+MSBuild version 18.12.2-1.26514.2+04f6ca984 for .NET Framework
+
+  Checking File Globs
+  1>Checking Build System
+  Building VST3 manifest helper for TechnicalTape
+  Building Custom Rule D:/a/technical-tape/technical-tape/CMakeLists.txt
+  TechnicalTape_rc_lib.vcxproj -> D:\a\technical-tape\technical-tape\build\TechnicalTape_rc_lib.dir\Release\TechnicalTape_rc_lib.lib
+  -- The CXX compiler identification is MSVC 19.52.37029.0
+  -- Detecting CXX compiler ABI info
+  -- Detecting CXX compiler ABI info - done
+  -- Check for working CXX compiler: C:/Program Files/Microsoft Visual Studio/18/Enterprise/VC/Tools/MSVC/14.52.37025/bin/Hostx64/x64/cl.exe - skipped
+  -- Detecting CXX compile features
+  -- Detecting CXX compile features - done
+  -- Configuring done (1.9s)
+  -- Generating done (0.0s)
+  -- Build files have been written to: D:/a/technical-tape/technical-tape/build/vst3_helpers/TechnicalTape
+  MSBuild version 18.12.2-1.26514.2+04f6ca984 for .NET Framework
+  
+    1>Checking Build System
+    Building Custom Rule D:/a/technical-tape/technical-tape/build/_deps/juce-src/extras/Build/CMake/juce_vst3_helper/CMakeLists.txt
+    juce_VST3ManifestHelper.cpp
+    vst3_helper.vcxproj -> D:\a\technical-tape\technical-tape\build\vst3_helpers\TechnicalTape\vst3_helper.exe
+    Building Custom Rule D:/a/technical-tape/technical-tape/build/_deps/juce-src/extras/Build/CMake/juce_vst3_helper/CMakeLists.txt
+  Building Custom Rule D:/a/technical-tape/technical-tape/CMakeLists.txt
+  Building Custom Rule D:/a/technical-tape/technical-tape/CMakeLists.txt
+  Generating juce_binarydata_TTAssets/JuceLibraryCode/BinaryData1.cpp, juce_binarydata_TTAssets/JuceLibraryCode/BinaryData2.cpp, juce_binarydata_TTAssets/JuceLibraryCode/BinaryData3.cpp, juce_binarydata_TTAssets/JuceLibraryCode/BinaryData4.cpp, juce_binarydata_TTAssets/JuceLibraryCode/BinaryData5.cpp, juce_binarydata_TTAssets/JuceLibraryCode/BinaryData6.cpp, juce_binarydata_TTAssets/JuceLibraryCode/BinaryData7.cpp, juce_binarydata_TTAssets/JuceLibraryCode/BinaryData8.cpp, juce_binarydata_TTAssets/JuceLibraryCode/BinaryData.h
+  Fft.cpp
+  Design.cpp
+  Building Custom Rule D:/a/technical-tape/technical-tape/CMakeLists.txt
+  BinaryData1.cpp
+  BinaryData2.cpp
+  BinaryData3.cpp
+  BinaryData4.cpp
+  Convolver.cpp
+  BinaryData5.cpp
+  BinaryData6.cpp
+  TapeModel.cpp
+  TapeEngine.cpp
+  Generating Code...
+  BinaryData7.cpp
+  pffft.c
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft_priv_impl.h(76,5): warning C4273: 'pffft_simd_size': inconsistent dll linkage [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+  (compiling source file '../Source/engine/pffft/pffft.c')
+      D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft.h(283,20):
+      see previous definition of 'pffft_simd_size'
+  
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft_priv_impl.h(78,5): warning C4273: 'pffft_min_fft_size': inconsistent dll linkage [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+  (compiling source file '../Source/engine/pffft/pffft.c')
+      D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft.h(292,20):
+      see previous definition of 'pffft_min_fft_size'
+  
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft_priv_impl.h(91,5): warning C4273: 'pffft_is_valid_size': inconsistent dll linkage [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+  (compiling source file '../Source/engine/pffft/pffft.c')
+      D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft.h(306,20):
+      see previous definition of 'pffft_is_valid_size'
+  
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft_priv_impl.h(100,5): warning C4273: 'pffft_nearest_transform_size': inconsistent dll linkage [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+  (compiling source file '../Source/engine/pffft/pffft.c')
+      D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft.h(312,20):
+      see previous definition of 'pffft_nearest_transform_size'
+  
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft_priv_impl.h(116,14): warning C4273: 'pffft_simd_arch': inconsistent dll linkage [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+  (compiling source file '../Source/engine/pffft/pffft.c')
+      D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft.h(286,29):
+      see previous definition of 'pffft_simd_arch'
+  
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft_priv_impl.h(2691,15): warning C4273: 'pffft_new_setup': inconsistent dll linkage [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+  (compiling source file '../Source/engine/pffft/pffft.c')
+      D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft.h(134,29):
+      see previous definition of 'pffft_new_setup'
+  
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft_priv_impl.h(2755,6): warning C4273: 'pffft_destroy_setup': inconsistent dll linkage [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+  (compiling source file '../Source/engine/pffft/pffft.c')
+      D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft.h(135,21):
+      see previous definition of 'pffft_destroy_setup'
+  
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft_priv_impl.h(2798,6): warning C4273: 'pffft_zreorder': inconsistent dll linkage [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+  (compiling source file '../Source/engine/pffft/pffft.c')
+      D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft.h(192,21):
+      see previous definition of 'pffft_zreorder'
+  
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft_priv_impl.h(3480,6): warning C4273: 'pffft_zconvolve_accumulate': inconsistent dll linkage [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+  (compiling source file '../Source/engine/pffft/pffft.c')
+      D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft.h(206,21):
+      see previous definition of 'pffft_zconvolve_accumulate'
+  
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft_priv_impl.h(3532,6): warning C4273: 'pffft_zconvolve_scale': inconsistent dll linkage [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+  (compiling source file '../Source/engine/pffft/pffft.c')
+      D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft.h(220,21):
+      see previous definition of 'pffft_zconvolve_scale'
+  
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft_priv_impl.h(3584,6): warning C4273: 'pffft_zconvolve': inconsistent dll linkage [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+  (compiling source file '../Source/engine/pffft/pffft.c')
+      D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft.h(234,21):
+      see previous definition of 'pffft_zconvolve'
+  
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft_priv_impl.h(3635,5): warning C4273: 'pffft_zconvert_zp': inconsistent dll linkage [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+  (compiling source file '../Source/engine/pffft/pffft.c')
+      D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft.h(261,20):
+      see previous definition of 'pffft_zconvert_zp'
+  
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft_priv_impl.h(3673,5): warning C4273: 'pffft_zconvolve_zp': inconsistent dll linkage [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+  (compiling source file '../Source/engine/pffft/pffft.c')
+      D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft.h(275,20):
+      see previous definition of 'pffft_zconvolve_zp'
+  
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft_priv_impl.h(3887,6): warning C4273: 'pffft_transform': inconsistent dll linkage [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+  (compiling source file '../Source/engine/pffft/pffft.c')
+      D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft.h(169,21):
+      see previous definition of 'pffft_transform'
+  
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft_priv_impl.h(3891,6): warning C4273: 'pffft_transform_ordered': inconsistent dll linkage [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+  (compiling source file '../Source/engine/pffft/pffft.c')
+      D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft.h(178,21):
+      see previous definition of 'pffft_transform_ordered'
+  
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft_priv_impl.h(3901,19): error C2491: 'validate_pffft_simd': definition of dllimport function not allowed [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+  (compiling source file '../Source/engine/pffft/pffft.c')
+  
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft_priv_impl.h(3960,18): error C2491: 'validate_pffft_simd_ex': definition of dllimport function not allowed [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+  (compiling source file '../Source/engine/pffft/pffft.c')
+  
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft.c(140,6): warning C4273: 'pffft_zconvolve_no_accu': inconsistent dll linkage [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+      D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft.h(280,38):
+      see previous definition of 'pffft_zconvolve_no_accu'
+  
+  pffft_common.c
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft_common.c(47,20): error C2491: 'pffft_aligned_malloc': definition of dllimport function not allowed [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft_common.c(48,19): error C2491: 'pffft_aligned_free': definition of dllimport function not allowed [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft_common.c(49,18): error C2491: 'pffft_next_power_of_two': definition of dllimport function not allowed [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft_common.c(50,18): error C2491: 'pffft_is_power_of_two': definition of dllimport function not allowed [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft_common.c(52,20): error C2491: 'pffftd_aligned_malloc': definition of dllimport function not allowed [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft_common.c(53,19): error C2491: 'pffftd_aligned_free': definition of dllimport function not allowed [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft_common.c(54,18): error C2491: 'pffftd_next_power_of_two': definition of dllimport function not allowed [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+D:\a\technical-tape\technical-tape\Source\engine\pffft\pffft_common.c(55,18): error C2491: 'pffftd_is_power_of_two': definition of dllimport function not allowed [D:\a\technical-tape\technical-tape\build\tt_engine.vcxproj]
+  Generating Code...
+  BinaryData8.cpp
+  Generating Code...
+  TTAssets.vcxproj -> D:\a\technical-tape\technical-tape\build\Release\TTAssets.lib
