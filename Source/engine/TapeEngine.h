@@ -4,7 +4,7 @@
 //   in -> INPUT -> pre-emphasis estimate -> look-ahead peak detector
 //                                       -> Chebyshev branches (order n at the lowest alias-free rate)
 //                                       -> per-level kernels / basis (partitioned FFT convolution)
-//              -> treble high-pass -> treble detector -> the fundamental's treble share, per level
+//              -> per treble band: band filter -> its own detector -> that band's share of the fundamental
 //      -> wow & flutter (fractional delay, measured spectrum) -> OUTPUT x auto gain -> out
 // Nothing on the audio thread allocates. Changing tape, speed or oversampling starts a second core that
 // warms up and crossfades in, so there is never a click or a gap.
@@ -28,7 +28,7 @@ namespace tt
 class Core
 {
 public:
-    struct Limits { int maxOrder = 1, maxPartitions = 1, maxCount = 1, maxPemp = 256, block = 128; };
+    struct Limits { int maxOrder = 1, maxPartitions = 1, maxCount = 1, maxPemp = 256, block = 128, maxTreble = 0; };
 
     void allocate (int numChannels, const Limits& lim);
     /** Points the core at a prepared model and an OS factor (1, 2, 4, 8, 16) and resets it. No allocation. */
@@ -80,12 +80,16 @@ private:
         BranchConvolver conv[32];
         std::vector<float> bIn[32];
         std::vector<float> lw;
-        // treble stage
-        Biquad trebleHp;
-        Detector detHf;
-        History lrawHf;
-        BranchConvolver convHf;
-        std::vector<float> lwHf;
+        // treble stage: one of these per band
+        struct Treble
+        {
+            Biquad hp, lp;
+            Detector det;
+            History lraw;
+            BranchConvolver conv;
+            std::vector<float> lw;
+        };
+        Treble treble[ModelData::kMaxTrebleBands];
         int64_t n = 0;
         void reset();
     };

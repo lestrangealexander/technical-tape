@@ -38,11 +38,17 @@ struct ModelData
     };
     std::vector<Branch> branches;
 
-    // treble stage (version 3 models that have one): the treble share of the fundamental, indexed by a
-    // second detector that hears only the highs through a high-pass at trebleFc
-    float trebleFc = 0.0f;
-    Branch treble;
-    bool hasTreble() const noexcept { return trebleFc > 0.0f && treble.count > 0; }
+    // treble stage (version 3+ models that have one): bands of the fundamental from fcLo up, each indexed
+    // by its own detector, which hears the signal through a high-pass at fcLo (and a low-pass at fcHi
+    // when another band sits above it), lowest first
+    static constexpr int kMaxTrebleBands = 4;
+    struct TrebleBand
+    {
+        float fcLo = 0.0f, fcHi = 0.0f;
+        Branch branch;
+    };
+    std::vector<TrebleBand> treble;
+    bool hasTreble() const noexcept { return ! treble.empty(); }
 
     std::vector<std::pair<float, float>> flutterPeaks;   // Hz, RMS delay (s)
     std::vector<std::pair<float, float>> flutterCont;    // Hz, one-sided PSD of the delay (s^2/Hz)
@@ -96,9 +102,14 @@ struct PreparedModel
     int maxPartitions = 0;
     int maxCount = 0;
 
-    bool hasTreble = false;
-    Branch treble;                       // order 1, indexed by the treble detector
-    double trebleB[3] = { 1.0, 0.0, 0.0 }, trebleA[3] = { 1.0, 0.0, 0.0 };
+    struct TrebleBand
+    {
+        Branch branch;                   // order 1, indexed by this band's detector
+        double hpB[3] = { 1.0, 0.0, 0.0 }, hpA[3] = { 1.0, 0.0, 0.0 };
+        double lpB[3] = { 1.0, 0.0, 0.0 }, lpA[3] = { 1.0, 0.0, 0.0 };
+        bool lowPass = false;
+    };
+    std::vector<TrebleBand> treble;
 
     static std::shared_ptr<const PreparedModel> build (const ModelData& m, double fs, int block);
 };

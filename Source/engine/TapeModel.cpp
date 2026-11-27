@@ -91,9 +91,11 @@ std::string parseModel (const void* data, size_t size, ModelData& out)
     if (size < 8 || std::memcmp (b, "TTM1", 4) != 0) return "not a Technical Tape model";
     Reader top { b, size, 4 };
     const auto version = top.get<uint32_t>();
-    if (version != 2 && version != 3) return "unsupported model version " + std::to_string (version);
+    if (version < 2 || version > 4) return "unsupported model version " + std::to_string (version);
     static std::atomic<uint64_t> serials { 0 };
     bool haveHead = false;
+    std::vector<std::pair<float, float>> trebleFc;
+    std::vector<ModelData::Branch> trebleBr;
     out = ModelData();
     out.serial = ++serials;
     while (top.pos + 8 <= size)
@@ -146,12 +148,15 @@ std::string parseModel (const void* data, size_t size, ModelData& out)
             if (br.mode == 0)
                 r.floats (br.weights, (size_t) out.numLevels * (size_t) br.count);
             if (t == "BRCH") out.branches.push_back (std::move (br));
-            else out.treble = std::move (br);
+            else trebleBr.push_back (std::move (br));
         }
         else if (t == "TRBL")
         {
-            out.trebleFc = r.get<float>();
-            if (! (out.trebleFc > 0.0f && out.trebleFc < 0.45f * (float) out.sampleRate)) return "bad treble stage";
+            const float lo = r.get<float>();
+            const float hi = len >= 8 ? r.get<float>() : 0.0f;
+            const float top = 0.45f * (float) out.sampleRate;
+            if (! (lo > 0.0f && lo < top && (hi == 0.0f || (hi > lo && hi < top)))) return "bad treble band";
+            trebleFc.emplace_back (lo, hi);
         }
         else if (t == "FLUT")
         {
@@ -186,7 +191,10 @@ std::string parseModel (const void* data, size_t size, ModelData& out)
     if (! haveHead) return "no header";
     if (out.branches.empty() || out.branches.front().order != 1) return "no linear branch";
     if (out.pempFreqs.empty()) return "no pre-emphasis";
-    if ((out.trebleFc > 0.0f) != (out.treble.count > 0)) return "incomplete treble stage";
+    if (trebleFc.size() != trebleBr.size() || (int) trebleFc.size() > ModelData::kMaxTrebleBands)
+        return "incomplete treble stage";
+    for (size_t k = 0; k < trebleFc.size(); ++k)
+        out.treble.push_back ({ trebleFc[k].first, trebleFc[k].second, std::move (trebleBr[k]) });
     std::sort (out.branches.begin(), out.branches.end(), [] (const auto& a, const auto& c) { return a.order < c.order; });
     return {};
 }
@@ -256,11 +264,14 @@ std::shared_ptr<const PreparedModel> PreparedModel::build (const ModelData& m, d
     };
     for (const auto& b : m.branches)
         pm->branches.push_back (prepare (b));
-    if (m.hasTreble())
+    for (const auto& band : m.treble)
     {
-        pm->hasTreble = true;
-        pm->treble = prepare (m.treble);
-        Biquad::highPass ((double) m.trebleFc, fs, pm->trebleB, pm->trebleA);
+        PreparedModel::TrebleBand tb;
+        tb.branch = prepare (band.branch);
+        Biquad::highPass ((double) band.fcLo, fs, tb.hpB, tb.hpA);
+        tb.lowPass = band.fcHi > 0.0f;
+        if (tb.lowPass) Biquad::lowPass ((double) band.fcHi, fs, tb.lpB, tb.lpA);
+        pm->treble.push_back (std::move (tb));
     }
     return pm;
 }

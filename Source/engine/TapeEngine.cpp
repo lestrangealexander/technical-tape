@@ -72,11 +72,15 @@ void Core::Channel::reset()
     for (auto& cv : conv) cv.reset();
     for (auto& b : bIn) std::fill (b.begin(), b.end(), 0.0f);
     std::fill (lw.begin(), lw.end(), 0.0f);
-    trebleHp.reset();
-    detHf.reset();
-    lrawHf.reset();
-    convHf.reset();
-    std::fill (lwHf.begin(), lwHf.end(), 0.0f);
+    for (auto& t : treble)
+    {
+        t.hp.reset();
+        t.lp.reset();
+        t.det.reset();
+        t.lraw.reset();
+        t.conv.reset();
+        std::fill (t.lw.begin(), t.lw.end(), 0.0f);
+    }
     n = 0;
 }
 
@@ -115,10 +119,14 @@ void Core::allocate (int numChannels, const Limits& l)
             }
         }
         c.lw.assign ((size_t) B, 0.0f);
-        c.detHf.prepare (80, 0.9f);
-        c.lrawHf.prepare (2048);
-        c.convHf.prepare (B, l.maxPartitions);
-        c.lwHf.assign ((size_t) B, 0.0f);
+        for (int k = 0; k < l.maxTreble; ++k)
+        {
+            auto& t = c.treble[k];
+            t.det.prepare (80, 0.9f);
+            t.lraw.prepare (2048);
+            t.conv.prepare (B, l.maxPartitions);
+            t.lw.assign ((size_t) B, 0.0f);
+        }
     }
     for (auto& o : ordersAtRate) o.reserve (32);
     weights.assign ((size_t) l.maxCount * (size_t) B, 0.0f);
@@ -162,11 +170,14 @@ void Core::configure (const PreparedModel* model, int osFactor)
         }
         for (const auto& b : pm->branches)
             c.conv[b.order].setBranch (&b);
-        if (pm->hasTreble)
+        for (size_t k = 0; k < pm->treble.size(); ++k)
         {
-            c.trebleHp.setCoefficients (pm->trebleB, pm->trebleA);
-            c.detHf.prepare (pm->lookAhead, pm->releaseCoef);
-            c.convHf.setBranch (&pm->treble);
+            const auto& band = pm->treble[k];
+            auto& t = c.treble[k];
+            t.hp.setCoefficients (band.hpB, band.hpA);
+            t.lp.setCoefficients (band.lpB, band.lpA);
+            t.det.prepare (pm->lookAhead, pm->releaseCoef);
+            t.conv.setBranch (&band.branch);
         }
     }
     reset();
@@ -345,11 +356,14 @@ void Core::processBlock (int ch, const float* x, float* y) noexcept
             }
         }
         c.lw[(size_t) i] = c.lraw.at ((double) (c.n - shiftLw));
-        if (pm->hasTreble)
+        for (size_t k = 0; k < pm->treble.size(); ++k)
         {
-            // the treble detector: the same look-ahead detector, hearing only the highs
-            c.lrawHf.push (c.detHf.process (c.trebleHp.process (x[i] * invRefPeak)));
-            c.lwHf[(size_t) i] = c.lrawHf.at ((double) (c.n - shiftLw));
+            // each treble band's detector: the same look-ahead detector, hearing only that band
+            auto& t = c.treble[k];
+            float v = t.hp.process (x[i] * invRefPeak);
+            if (pm->treble[k].lowPass) v = t.lp.process (v);
+            t.lraw.push (t.det.process (v));
+            t.lw[(size_t) i] = t.lraw.at ((double) (c.n - shiftLw));
         }
         ++c.n;
     }
@@ -358,11 +372,12 @@ void Core::processBlock (int ch, const float* x, float* y) noexcept
     yacc.clear();
     for (const auto& b : pm->branches)
         runBranch (c.conv[b.order], b, c.bIn[b.order].data(), c.lw.data(), ldb.data());
-    if (pm->hasTreble)
+    for (size_t k = 0; k < pm->treble.size(); ++k)
     {
+        auto& t = c.treble[k];
         for (int i = 0; i < B; ++i)
-            ldbHf[(size_t) i] = 20.0f * std::log10 (c.lwHf[(size_t) i]);
-        runBranch (c.convHf, pm->treble, c.bIn[1].data(), c.lwHf.data(), ldbHf.data());
+            ldbHf[(size_t) i] = 20.0f * std::log10 (t.lw[(size_t) i]);
+        runBranch (t.conv, pm->treble[k].branch, c.bIn[1].data(), t.lw.data(), ldbHf.data());
     }
     const float g = pm->refPeak;
     for (int i = 0; i < B; ++i) y[i] += yacc[(size_t) i] * g;
@@ -652,7 +667,8 @@ void TapeEngine::prepare (double sampleRate, int, int channels)
             lim.maxCount = std::max (lim.maxCount, b.count);
         };
         for (const auto& b : m->branches) room (b);
-        if (m->hasTreble()) room (m->treble);
+        for (const auto& band : m->treble) room (band.branch);
+        lim.maxTreble = std::max (lim.maxTreble, (int) m->treble.size());
         lim.maxPemp = std::max (lim.maxPemp, (int) std::lround (256.0 * fs / 48000.0));
         flutterSpecs.push_back (Flutter::makeSpec (*m));
         maxDelay = std::max (maxDelay, m->flutterMaxDelay);

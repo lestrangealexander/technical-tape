@@ -8,9 +8,9 @@ Timeline (base-rate samples, A = look-ahead, D = OS latency, d0 = kernel pre-del
   b1(t)     = vp(t - D)
   bn(t)     = down_M( Lin * T_n(up_M(vp) / Lin) )(t)         n = 2..K, delayed to D in total
   y(t)      = refPeak * sum_n sum_r w_nr(L(t)) (B_nr * bn)(t),  L(t) = Lraw(t - D - d0 + A - 1)
-Treble stage (models with one): Lhf = the same detector on W * (x * drive / refPeak), W the treble
-high-pass; the treble branch's kernels convolve b1 like the fundamental's, weighted by w_r(Lhf(t)) with
-Lhf delayed exactly like L.
+Treble stage (models with one): per band k, Lk = the same detector on W_k * (x * drive / refPeak), W_k
+the band's high-pass (and low-pass, below another band); the band's kernels convolve b1 like the
+fundamental's, weighted by w_r(Lk(t)) with Lk delayed exactly like L.
 """
 from __future__ import annotations
 
@@ -136,10 +136,12 @@ def process(model, x, fs=48000.0, drive_db=0.0, factor=8, max_order=None, auto_g
     b = cheb_inputs(vp, Lraw, A, model.margin, K, factor)
     y = np.zeros(len(v))
     jobs = [(br, Lw) for br in model.branches[:K]]
-    if getattr(model, 'treble', None) is not None and model.treble_fc > 0:
-        hb, ha = ds.treble_hp(model.treble_fc, fs)
-        Lhf = detector(ss.lfilter(hb, ha, v), A, fs, rel)
-        jobs.append((model.treble, np.concatenate([np.full(shift, Lhf[0]), Lhf])[:len(Lhf)]))
+    for tb in getattr(model, 'treble_bands', []):
+        vh = v
+        for fb, fa in ds.treble_filters(tb.fc_lo, tb.fc_hi, fs):
+            vh = ss.lfilter(fb, fa, vh)
+        Lk = detector(vh, A, fs, rel)
+        jobs.append((tb.branch, np.concatenate([np.full(shift, Lk[0]), Lk])[:len(Lk)]))
     for br, Lsrc in jobs:
         w = branch_weights(br, model, Lsrc)
         for r in range(br.kernels.shape[0]):

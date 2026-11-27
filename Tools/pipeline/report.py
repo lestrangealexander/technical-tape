@@ -173,8 +173,10 @@ def write_report(path, model, dbg, r0, r6, log_lines=()):
             ('Branches', esc(', '.join(f'{i + 1}: {s}' for i, s in enumerate(m.get('branch_modes', []))))),
             ('Kernel truncation (worst)', f'{max(m.get("truncation_db", [-999])):.1f} dB re fundamental'),
             ('Pre-emphasis fit', esc(str(m.get('preemphasis')))),
-            ('Treble stage', (f'treble detector through a high-pass at {model.treble_fc / 1000:g} kHz; the highs '
-                              f'saturate on their own level' if getattr(model, 'treble_fc', 0) > 0 else 'none')),
+            ('Treble stage', ('; '.join((f'{tb.fc_lo / 1000:g}-{tb.fc_hi / 1000:g} kHz' if tb.fc_hi > 0 else
+                                         f'from {tb.fc_lo / 1000:g} kHz') for tb in model.treble_bands)
+                              + ': each band saturates on its own level' if getattr(model, 'treble_bands', None)
+                              else 'none')),
             ('Broadband fit (pink noise)', esc(str(m.get('broadband')))),
             ('Above the hottest capture', esc(str(m.get('extrapolation')))),
             ('Wow & flutter (capture)', esc(str(m.get('wow_flutter')))),

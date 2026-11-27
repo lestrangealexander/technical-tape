@@ -86,6 +86,20 @@ public:
         a[2] = (1.0 - alpha) / a0;
     }
 
+    /** 2nd-order Butterworth low-pass at fc (RBJ form), as Tools/pipeline/dsp_shared.py. */
+    static void lowPass (double fc, double fs, double* b, double* a) noexcept
+    {
+        const double w0 = 2.0 * 3.14159265358979323846 * fc / fs;
+        const double cw = std::cos (w0), alpha = std::sin (w0) / (2.0 * (1.0 / std::sqrt (2.0)));
+        const double a0 = 1.0 + alpha;
+        b[0] = (1.0 - cw) / 2.0 / a0;
+        b[1] = (1.0 - cw) / a0;
+        b[2] = (1.0 - cw) / 2.0 / a0;
+        a[0] = 1.0;
+        a[1] = -2.0 * cw / a0;
+        a[2] = (1.0 - alpha) / a0;
+    }
+
 private:
     double b0 = 1.0, b1 = 0.0, b2 = 0.0, a1 = 0.0, a2 = 0.0, z1 = 0.0, z2 = 0.0;
 };

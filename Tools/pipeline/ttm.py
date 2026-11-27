@@ -9,8 +9,11 @@
         f32 weights[numLevels*count]
           mode 0: a basis of `count` kernels, mixed per level by the weights table
           mode 1: one kernel per detector level (count == numLevels), interpolated directly
-  TRBL  f32 fcHz                                                (version 3, optional: the treble detector)
-  BRHF  as BRCH, order 1: the treble part of the fundamental, indexed by the treble detector's level
+  TRBL  f32 fcLoHz [, f32 fcHiHz]       (version 3+, optional, one per treble band, lowest first: the band's
+                                        detector hears through a high-pass at fcLo and, if fcHi > 0, a
+                                        low-pass at fcHi; version 3 files have fcLo only)
+  BRHF  as BRCH, order 1: that band's share of the fundamental, indexed by its detector's level (the
+        k-th BRHF belongs to the k-th TRBL)
   FLUT  i32 nPeaks, (f32 hz, f32 rmsSec)[nPeaks], i32 nCont, (f32 hz, f32 psd s^2/Hz)[nCont], f32 maxDelaySec
   AGTB  i32 n, f32 drive0Db, f32 stepDb, f32 gainDb[n]
   META  UTF-8 JSON (provenance and QC; the engine ignores it)
@@ -23,7 +26,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-VERSION = 3
+VERSION = 4
 
 
 @dataclass
@@ -31,6 +34,13 @@ class Branch:
     order: int
     kernels: np.ndarray        # (count, length) float32 (stored as float16)
     weights: np.ndarray | None # (numLevels, count) float32 for a basis; None: one kernel per level
+
+
+@dataclass
+class TrebleBand:
+    fc_lo: float               # Hz: the band's detector high-pass, where its share starts
+    fc_hi: float               # Hz: its low-pass, where the next band takes over (0 for the top band)
+    branch: Branch
 
 
 @dataclass
@@ -57,8 +67,7 @@ class Model:
     meta: dict = field(default_factory=dict)
     flags: int = 0
     margin: float = 1.02
-    treble_fc: float = 0.0     # Hz; 0: no treble stage
-    treble: Branch | None = None
+    treble_bands: list = field(default_factory=list)   # TrebleBand, lowest first; empty: no treble stage
 
     def levels_db(self):
         return self.level0_db + self.level_step_db * np.arange(self.num_levels)
@@ -92,10 +101,10 @@ def write(path, m: Model):
 
     for b in m.branches:
         out.append(_chunk('BRCH', branch_payload(b)))
-    if m.treble is not None and m.treble_fc > 0:
-        assert m.treble.order == 1
-        out.append(_chunk('TRBL', struct.pack('<f', m.treble_fc)))
-        out.append(_chunk('BRHF', branch_payload(m.treble)))
+    for tb in m.treble_bands:
+        assert tb.branch.order == 1 and tb.fc_lo > 0
+        out.append(_chunk('TRBL', struct.pack('<ff', tb.fc_lo, tb.fc_hi)))
+        out.append(_chunk('BRHF', branch_payload(tb.branch)))
     fp, fc = np.asarray(m.flutter_peaks, float).reshape(-1, 2), np.asarray(m.flutter_cont, float).reshape(-1, 2)
     out.append(_chunk('FLUT', struct.pack('<i', len(fp)) + _f32(fp) + struct.pack('<i', len(fc)) + _f32(fc)
                       + struct.pack('<f', m.flutter_max_delay)))
@@ -108,7 +117,8 @@ def write(path, m: Model):
 def read(path) -> Model:
     data = open(path, 'rb').read()
     assert data[:4] == b'TTM1', 'not a Technical Tape model'
-    assert struct.unpack_from('<I', data, 4)[0] in (2, 3), 'unsupported model version'
+    assert struct.unpack_from('<I', data, 4)[0] in (2, 3, 4), 'unsupported model version'
+    treble_fc, treble_br = [], []
     pos = 8
     branches, kw = [], {}
     head = None
@@ -133,9 +143,11 @@ def read(path) -> Model:
             if tag == 'BRCH':
                 branches.append(Branch(order, kern, w))
             else:
-                kw['treble'] = Branch(order, kern, w)
+                treble_br.append(Branch(order, kern, w))
         elif tag == 'TRBL':
-            kw['treble_fc'] = struct.unpack_from('<f', p)[0]
+            lo = struct.unpack_from('<f', p)[0]
+            hi = struct.unpack_from('<f', p, 4)[0] if len(p) >= 8 else 0.0
+            treble_fc.append((lo, hi))
         elif tag == 'FLUT':
             k = struct.unpack_from('<i', p)[0]
             fp = np.frombuffer(p, '<f4', 2 * k, 4).reshape(k, 2).copy()
@@ -151,4 +163,6 @@ def read(path) -> Model:
         elif tag == 'META':
             kw['meta'] = json.loads(p.decode('utf-8'))
     sr, rp, nl, l0, ls, nb, pd, la, rel, lo, hi, flags, margin = head
+    assert len(treble_fc) == len(treble_br), 'treble bands and their branches do not pair up'
+    kw['treble_bands'] = [TrebleBand(lo_, hi_, br) for (lo_, hi_), br in zip(treble_fc, treble_br)]
     return Model(sr, rp, l0, ls, nl, pd, la, rel, lo, hi, branches=branches, flags=flags, margin=margin, **kw)
