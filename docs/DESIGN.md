@@ -261,7 +261,8 @@ Before the continuation above the hottest capture, pink noise at +12 VU was off 
 and the +12 VU null was −1.9 dB (15 ips).
 
 The C++ engine against the Python reference (`Tests/compare_engine.py`): residual −103 dB
-re the output (float32 vs float64) at every OS factor, at 0 and +12 dB drive.
+re the output (float32 vs float64) at every OS factor, at 0 and +12 dB drive; −111 dB on the
+real ATR 3¾ ips model.
 
 ## 10. Limits and future work
 
