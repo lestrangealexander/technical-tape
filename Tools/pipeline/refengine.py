@@ -137,9 +137,12 @@ def process(model, x, fs=48000.0, drive_db=0.0, factor=8, max_order=None, auto_g
     y = np.zeros(len(v))
     jobs = [(br, Lw) for br in model.branches[:K]]
     for tb in getattr(model, 'treble_bands', []):
-        vh = v
+        vh, vr = v, vp
         for fb, fa in ds.treble_filters(tb.fc_lo, tb.fc_hi, fs):
-            vh = ss.lfilter(fb, fa, vh)
+            vh, vr = ss.lfilter(fb, fa, vh), ss.lfilter(fb, fa, vr)
+        lk = getattr(tb, 'leak', 0.0)
+        if lk:
+            vh = vh + lk * (vp - vr)          # the rest of what the shared detector hears
         Lk = detector(vh, A, fs, rel)
         jobs.append((tb.branch, np.concatenate([np.full(shift, Lk[0]), Lk])[:len(Lk)]))
     for br, Lsrc in jobs:

@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import copy
 import datetime
 import math
 
@@ -580,21 +581,25 @@ def treble_layouts(speed):
     return tuple(((lo, 2.0 * lo), (2.0 * lo, 0.0)) for lo in (2.0 * base, 1.6 * base))
 
 
-def treble_spectra(levels, Hg, pemp_freqs, pemp_db, Lgrid, fc_lo, fc_hi, share):
+def treble_spectra(levels, Hg, pemp_freqs, pemp_db, Lgrid, fc_lo, fc_hi, share, leak=0.0):
     """Kernel spectra of one treble band, (len(Lgrid), bins).
 
     The tape's highs saturate on their own level (self-erasure), not on the whole signal's. A treble
     band carries `share` of the fundamental and is indexed by its own detector, which hears the signal
-    through the band's weighting W (a high-pass at fc_lo, and a low-pass at fc_hi below another band). Its
+    through the band's weighting Wb (a high-pass at fc_lo, and a low-pass at fc_hi below another band),
+    plus `leak` times the rest of what the shared detector hears (its pre-emphasised signal with the band
+    taken out): on tape a loud low end and midrange squash the highs too, and music has far less top
+    than the pink noise the fit uses, so without it the highs stay too open as the input goes up. Its
     input is the pre-emphasised signal, like the fundamental's. A sine at f of level L reads L + |W(f)| dB
-    on the band's detector, so the kernel at band level lam is the measured fundamental at input level
-    lam - |W(f)| dB, divided by the pre-emphasis: single tones come out exactly as before, whatever the
-    layout."""
+    on the band's detector, W = Wb + leak * P * (1 - Wb), so the kernel at band level lam is the measured
+    fundamental at input level lam - |W(f)| dB, divided by the pre-emphasis: single tones come out
+    exactly as before, whatever the layout and leak."""
     hp = ds.design_minphase(pemp_freqs, pemp_db, FS, 256)
     P = ss.freqz(hp, worN=np.maximum(FK, 0.01), fs=FS)[1]
     W = np.ones(len(FK), complex)
     for fb, fa in ds.treble_filters(fc_lo, fc_hi, FS):
         W *= ss.freqz(fb, fa, worN=np.maximum(FK, 0.01), fs=FS)[1]
+    W = W + leak * P * (1.0 - W)
     Wdb = 20 * np.log10(np.maximum(np.abs(W), 1e-12))
     out = np.zeros((len(Lgrid), len(FK)), complex)
     for li, lam in enumerate(Lgrid):
@@ -744,32 +749,73 @@ BB_ALPHAS = (0.5, 0.25, 0.0)            # shares of P(f) tried first as shared p
                                         # (all of it, 1, never fitted a capture: the highs then over-compress the rest)
 BB_SEARCH_WINDOW = (1.5, 4.0)           # shorter stretches while searching
 BB_SEARCH_RELEASE = 20.0
-BB_BANDS = 1000.0 * 2 ** (np.arange(-13, 11) / 3.0)   # 1/3 octaves, 63 Hz .. 10 kHz
+BB_LOWEST_VU = -10.0                    # the normal pass's pink noise is fitted from here up (at 3.75 ips the highs
+                                        # already compress at -10 VU)
+BB_LEAKS = (0.1, 0.2, 0.35, 0.6)        # treble leaks tried for the best layout and share (with 0, already tried)
+BB_BANDS = 1000.0 * 2 ** (np.arange(-13, 13) / 3.0)   # 1/3 octaves, 63 Hz .. 16 kHz (the top octave: where too much shows first)
 
 
 def _band_levels(y):
+    """Power per 1/3 octave (BB_BANDS), dB."""
     f, p = ss.welch(y, FS, nperseg=8192)
-    return np.array([10 * np.log10(np.sum(p[(f >= c * 2 ** (-1 / 6)) & (f < c * 2 ** (1 / 6))]) + 1e-30)
+    return np.array([10 * np.log10(np.sum(p[(f >= c * 2 ** (-1 / 6)) & (f < c * 2 ** (1 / 6))]) * (f[1] - f[0]) + 1e-30)
                      for c in BB_BANDS])
 
 
+def dewarp_pink(x, y):
+    """A captured pink-noise section with the machine's wow and flutter taken out: the delay is tracked
+    against the test signal in the 1-5 kHz band (4 ms windows, smoothed below 150 Hz) and undone, so the
+    highs line up with the input sample by sample (a constant offset is left; it doesn't matter)."""
+    sos = ss.butter(4, [1000.0, 5000.0], 'bandpass', fs=FS, output='sos')
+    xa, ya = ss.hilbert(ss.sosfiltfilt(sos, x)), ss.hilbert(ss.sosfiltfilt(sos, y))
+    k = int(0.004 * FS)
+    c = np.convolve(ya * np.conj(xa), np.ones(k) / k, 'same')
+    ph = ss.sosfiltfilt(ss.butter(2, 150.0, fs=FS, output='sos'), np.unwrap(np.angle(c)))
+    tau = -(ph - np.median(ph)) / (2 * np.pi * 2485.0)     # 2485 Hz: pink noise's mean frequency in 1-5 kHz
+    return tc.frac_read(y, np.arange(len(y)) + tau * FS)
+
+
+def coherent_levels(x, y):
+    """Per 1/3 octave (BB_BANDS), dB, on the same scale as _band_levels: the power of the part of y that
+    follows x, |Pxy|^2 / Pxx (Welch:
+    4096-point segments below 1 kHz, 1024 from there up). Distortion products, noise and the highs' own
+    modulation on tape don't follow the input, so they don't count."""
+    res = {}
+    for nper in (4096, 1024):
+        f, pxy = ss.csd(x, y, FS, nperseg=nper)
+        pxx = ss.welch(x, FS, nperseg=nper)[1]
+        res[nper] = (f, np.abs(pxy) ** 2 / np.maximum(pxx, 1e-30))
+    out = []
+    for c in BB_BANDS:
+        f, coh = res[4096 if c < 1000.0 else 1024]
+        out.append(10 * np.log10(np.sum(coh[(f >= c * 2 ** (-1 / 6)) & (f < c * 2 ** (1 / 6))]) * (f[1] - f[0]) + 1e-30))
+    return np.array(out)
+
+
 def broadband_sections(r0, r6, info, window=BB_WINDOW):
-    """The captured pink-noise sections that load the tape: the normal pass's 0 and +3 VU, and the hot
-    pass's sections from 3 dB under the normal pass's top level up (input, drive dB, calibrated output
-    band levels)."""
+    """The captured pink-noise sections that load the tape: the normal pass's from BB_LOWEST_VU up, and the
+    hot pass's from 3 dB under the normal pass's top level up: (level, input, drive dB, the capture's
+    coherent band levels, its total band levels), calibrated, the capture's flutter taken out.
+
+    The fit matches the coherent levels: on tape, more and more of the highs stop following the input as
+    the level goes up (distortion products, and modulation of the highs themselves: at 3.75 ips half the
+    power above 6 kHz at 0 VU). The model can't make that part, and matching total power had it make up
+    the difference with clean treble: too much top end, more so the slower the speed and the higher the
+    level."""
     g0 = 10 ** (info['cal_gain_db'] / 20.0)
     a, b = int(window[0] * FS), int(window[1] * FS)
-    out = []
-    for lv, xin, yout in r0.pink:
-        if lv >= 0:
-            out.append((lv, np.asarray(xin, float), 0.0, _band_levels(np.asarray(yout, float)[a:b] * g0)))
+
+    def entry(lv, xin, yout, drive, g):
+        x = np.asarray(xin, float)
+        y = dewarp_pink(x, np.asarray(yout, float) * g)
+        return (lv, x, drive, coherent_levels(x[a:b], y[a:b]), _band_levels(y[a:b]))
+
+    out = [entry(lv, xin, yout, 0.0, g0) for lv, xin, yout in r0.pink if lv >= BB_LOWEST_VU]
     if r6 is not None and 'hot_in_db' in info:
         gh = g0 * 10 ** (-info['hot_out_db'] / 20.0)
         top0 = max(s.level for s in r0.sweeps)
-        for lv, xin, yout in r6.pink:
-            if lv + info['hot_in_db'] >= top0 - 3.0:
-                out.append((lv + info['hot_in_db'], np.asarray(xin, float), info['hot_in_db'],
-                            _band_levels(np.asarray(yout, float)[a:b] * gh)))
+        out += [entry(lv + info['hot_in_db'], xin, yout, info['hot_in_db'], gh) for lv, xin, yout in r6.pink
+                if lv + info['hot_in_db'] >= top0 - 3.0]
     return out
 
 
@@ -781,20 +827,45 @@ def pick_release(errors):
     return min(r for r, e in errors.items() if e <= best + tol)
 
 
-def broadband_error(model, sections, release_ms, window=BB_WINDOW):
-    """rms (dB) over bands and sections of model minus capture, and the mean error per section."""
+def broadband_error(model, sections, release_ms, window=BB_WINDOW, detail=False):
+    """rms (dB) over bands and sections of model minus capture, coherent levels (what the fit matches), and
+    the mean error per section; with detail, also the per-band errors and the total-power rms."""
     a, b = int(window[0] * FS), int(window[1] * FS)
-    errs = []
-    for lv, xin, drive, ref in sections:
-        y = re_.process(model, xin[:b + 4096], FS, drive_db=drive, factor=2, auto_gain=False, release_ms=release_ms)
-        errs.append(_band_levels(y[a:b]) - ref)
+    lat = re_.latency(model)
+    errs, errs_t = [], []
+    for lv, xin, drive, ref, ref_t in sections:
+        y = re_.process(model, xin[:b + lat + 4096], FS, drive_db=drive, factor=2, auto_gain=False,
+                        release_ms=release_ms)[a + lat:b + lat]
+        errs.append(coherent_levels(xin[a:b], y) - ref)
+        if detail:
+            errs_t.append(_band_levels(y) - ref_t)
     e = np.array(errs)
-    return float(np.sqrt(np.mean(e ** 2))), [float(np.mean(x)) for x in e]
+    res = (float(np.sqrt(np.mean(e ** 2))), [float(np.mean(x)) for x in e])
+    if detail:
+        et = np.array(errs_t)
+        return res + (e, float(np.sqrt(np.mean(et ** 2))), [float(np.mean(x)) for x in et])
+    return res
 
 
 # ------------------------------------------------------------------ all of it
 # ------------------------------------------------------------------ 9. assembly
-def assemble_model(levels, Hg, K, pf, pdb, layout=()):
+def retreble(model, parts, pf, pdb, layout, leak):
+    """The same model with its treble bands rebuilt for another leak (nothing else depends on it)."""
+    w_main, shares = ds.treble_shares(FK, layout)
+    Khf = [treble_spectra(parts['levels_x'], parts['Hg_x'], pf, pdb, parts['Lgrid'], lo, hi, sh, leak)
+           for (lo, hi), sh in zip(layout, shares)]
+    whole = parts['Kspec'][:, 0, :] + sum(Khf, np.zeros_like(parts['Kspec'][:, 0, :]))
+    e_ref = np.sum(np.roll(np.fft.irfft(whole, NK, axis=1), PRE_DELAY, axis=1) ** 2, axis=1)
+    m = copy.copy(model)
+    m.treble_bands = []
+    for (lo, hi), kh in zip(layout, Khf):
+        khf, _ = treble_kernels(kh, e_ref)
+        m.treble_bands.append(ttm.TrebleBand(float(lo), float(hi), ttm.Branch(1, khf.astype(np.float32), None),
+                                             float(leak)))
+    return m
+
+
+def assemble_model(levels, Hg, K, pf, pdb, layout=(), leak=0.0):
     """Everything from the pre-emphasis on: continuation, re-indexing, kernels, branches; with a
     layout (treble bands, lowest first), the treble stage."""
     levels_x, Hg_x, xinfo = extrapolate_levels(levels, Hg, K, pf, pdb)
@@ -803,7 +874,7 @@ def assemble_model(levels, Hg, K, pf, pdb, layout=()):
     Lgrid = np.arange(Lmin, Lmax + 1e-6, LEVEL_STEP)
     w_main, shares = ds.treble_shares(FK, layout)
     Kspec, hp = branch_spectra(levels_x, Hg_x, K, pf, pdb, Lgrid, w_main if layout else None)
-    Khf = [treble_spectra(levels_x, Hg_x, pf, pdb, Lgrid, lo, hi, sh) for (lo, hi), sh in zip(layout, shares)]
+    Khf = [treble_spectra(levels_x, Hg_x, pf, pdb, Lgrid, lo, hi, sh, leak) for (lo, hi), sh in zip(layout, shares)]
     whole = Kspec[:, 0, :] + sum(Khf, np.zeros_like(Kspec[:, 0, :]))
     e_ref = np.sum(np.roll(np.fft.irfft(whole, NK, axis=1), PRE_DELAY, axis=1) ** 2, axis=1)
     kern, trunc = kernels(Kspec, K, e_ref)
@@ -811,7 +882,7 @@ def assemble_model(levels, Hg, K, pf, pdb, layout=()):
     bands, trunc_hf = [], []
     for (lo, hi), kh in zip(layout, Khf):
         khf, tr = treble_kernels(kh, e_ref)
-        bands.append(ttm.TrebleBand(float(lo), float(hi), ttm.Branch(1, khf.astype(np.float32), None)))
+        bands.append(ttm.TrebleBand(float(lo), float(hi), ttm.Branch(1, khf.astype(np.float32), None), float(leak)))
         trunc_hf.append(tr)
     branches, modes, errs = [], [], []
     for n in range(1, K + 1):
@@ -847,8 +918,8 @@ def build(tape, speed, r0, r6, out_path, log=print, extra_meta=None, broadband=T
     log(f'  pre-emphasis fit: {"used" if pinfo["used"] else "not used (flat)"}, residual {pinfo["residual_db"]:.2f} dB '
         f'vs {pinfo["residual_flat_db"]:.2f} dB flat; P(10k) {np.interp(10000, pf, pdb_iso):+.1f} dB')
 
-    def assemble(pdb, layout=(), quiet=False):
-        return assemble_model(levels, Hg, K, pf, pdb, layout)
+    def assemble(pdb, layout=(), leak=0.0):
+        return assemble_model(levels, Hg, K, pf, pdb, layout, leak)
 
     # Steady tones fix the kernels, but two things only dense material can decide, because every choice
     # reproduces single tones exactly:
@@ -856,60 +927,84 @@ def build(tape, speed, r0, r6, out_path, log=print, extra_meta=None, broadband=T
     #    whole signal into it) and how much is the tape's own high-frequency saturation (self-erasure:
     #    the highs saturate on their own). P is scaled by a share alpha, from 1 (all pre-emphasis) to 0.
     #  - the detector's release, which decides how a peak envelope above the RMS loads the saturation.
-    #  - the treble stage's layout (section 4b): where its bands start.
-    # They are chosen where pink noise through the model matches the capture's own pink-noise sections.
-    def describe(layout):
+    #  - the treble stage's layout (section 4b): where its bands start, and how much of the shared signal its
+    #    detectors also hear (the leak: a loud low end and midrange squash the highs too).
+    # They are chosen where pink noise through the model matches the part of the capture's own pink-noise
+    # sections that follows the input (broadband_sections).
+    def describe(layout, leak=0.0):
         if not layout:
             return 'no treble stage'
-        return 'treble bands ' + ', '.join((f'{lo / 1000:g}-{hi / 1000:g}' if hi > 0 else f'{lo / 1000:g}+')
-                                          for lo, hi in layout) + ' kHz'
+        return ('treble bands ' + ', '.join((f'{lo / 1000:g}-{hi / 1000:g}' if hi > 0 else f'{lo / 1000:g}+')
+                                            for lo, hi in layout) + ' kHz' + (f', leak {leak:g}' if leak else ''))
 
-    alpha, layout = 1.0, ()
+    alpha, layout, leak = 1.0, (), 0.0
     bbinfo = {'release_ms': 60.0}
     sections = broadband_sections(r0, r6, info) if broadband else []
     if sections:
         quick = broadband_sections(r0, r6, info, BB_SEARCH_WINDOW)
-        tried_a, best_m = {}, None
+        tried, best_m = {}, None
 
-        def try_alpha(al, lay):
+        def score(key, m_, p_):
             nonlocal best_m
-            m_, p_ = assemble(pdb_iso * al, lay)
-            tried_a[(lay, al)] = broadband_error(m_, quick, BB_SEARCH_RELEASE, BB_SEARCH_WINDOW)
-            if best_m is None or tried_a[(lay, al)][0] < tried_a[(best_m[1], best_m[0])][0]:
-                best_m = (al, lay, m_, p_)
+            tried[key] = broadband_error(m_, quick, BB_SEARCH_RELEASE, BB_SEARCH_WINDOW)
+            if best_m is None or tried[key][0] < tried[best_m[0]][0]:
+                best_m = (key, m_, p_)
+
+        def try_alpha(al, lay, lk=0.0):
+            m_, p_ = assemble(pdb_iso * al, lay, lk)
+            score((lay, al, lk), m_, p_)
 
         for lay in (treble_layouts(speed) if TREBLE else ((),)):
             for al in BB_ALPHAS:
                 try_alpha(al, lay)
-            a0 = min((k for k in tried_a if k[0] == lay), key=lambda k: tried_a[k][0])[1]
+            a0 = min((k for k in tried if k[0] == lay), key=lambda k: tried[k][0])[1]
             for al in (a0 - 0.25, a0 + 0.25):
-                if 0.0 <= al <= 1.0 and (lay, round(al, 3)) not in tried_a:
+                if 0.0 <= al <= 1.0 and (lay, round(al, 3), 0.0) not in tried:
                     try_alpha(round(al, 3), lay)
-        alpha, layout, model, parts = best_m
-        for lay in dict.fromkeys(k[0] for k in tried_a):
-            row = ', '.join(f'{k[1]:g} -> {v[0]:.2f} dB' for k, v in sorted(tried_a.items(), key=lambda kv: kv[0][1])
-                            if k[0] == lay)
-            log(f'  {describe(lay)}, shared pre-emphasis {row} (pink noise rms)')
-        log(f'  using {describe(layout)} and {alpha:g} of P as shared pre-emphasis, P(10k) '
+        (lay, al, _), m0, p0 = best_m
+        if lay:
+            # the leak, for the best layout and share: only the treble bands change, then the share again
+            for lk in BB_LEAKS:
+                score((lay, al, lk), retreble(m0, p0, pf, pdb_iso * al, lay, lk), p0)
+            lk = best_m[0][2]
+            if lk > 0:
+                for al2 in (al - 0.25, al + 0.25):
+                    if 0.0 <= al2 <= 1.0 and (lay, round(al2, 3), lk) not in tried:
+                        try_alpha(round(al2, 3), lay, lk)
+        (layout, alpha, leak), model, parts = best_m
+        if leak > 0 and best_m[2] is p0 and best_m[1] is not m0:
+            model, parts = assemble(pdb_iso * alpha, layout, leak)     # all of it built with that leak
+        for key in dict.fromkeys((k[0], k[2]) for k in tried):
+            row = ', '.join(f'{k[1]:g} -> {v[0]:.2f} dB' for k, v in sorted(tried.items(), key=lambda kv: kv[0][1])
+                            if (k[0], k[2]) == key)
+            log(f'  {describe(*key)}, shared pre-emphasis {row} (pink noise rms)')
+        log(f'  using {describe(layout, leak)} and {alpha:g} of P as shared pre-emphasis, P(10k) '
             f'{alpha * np.interp(10000, pf, pdb_iso):+.1f} dB'
             + (f'; treble kernels {", ".join(str(tb.branch.kernels.shape[1]) for tb in model.treble_bands)} taps, '
                f'lose {max(parts["trunc_hf"]):.1f} dB to their windows' if layout else ''))
         quick_rel = {rel: broadband_error(model, quick, rel, BB_SEARCH_WINDOW) for rel in BB_RELEASES}
         best = pick_release({r: v[0] for r, v in quick_rel.items()})
-        err, per = broadband_error(model, sections, best)
-        bbinfo = {'release_ms': best, 'error_db': round(err, 3), 'alpha': alpha,
+        err, per, ebands, err_t, per_t = broadband_error(model, sections, best, detail=True)
+        hi_b = np.array(BB_BANDS) >= 1800.0
+        bbinfo = {'release_ms': best, 'error_db': round(err, 3), 'alpha': alpha, 'leak': leak,
                   'treble_bands_hz': [list(b_) for b_ in layout],
-                  'tried': {f'{describe(k[0])}, {k[1]:g}': round(v[0], 3) for k, v in tried_a.items()},
+                  'tried': {f'{describe(k[0], k[2])}, {k[1]:g}': round(v[0], 3) for k, v in tried.items()},
                   'sections_vu': [round(s_[0], 1) for s_ in sections],
                   'mean_error_per_section_db': [round(v, 3) for v in per],
+                  'treble_error_per_section_db': [round(float(np.mean(r_[hi_b])), 3) for r_ in ebands],
+                  'error_total_power_db': round(err_t, 3),
+                  'mean_total_power_error_per_section_db': [round(v, 3) for v in per_t],
                   'release_tried': {str(int(r)): round(v[0], 3) for r, v in quick_rel.items()}}
-        log(f'  broadband check: pink noise through the model vs the capture, {len(sections)} sections '
-            f'{bbinfo["sections_vu"]} VU: {err:.2f} dB rms (1/3 octaves 63 Hz-10 kHz), release '
-            f'{best:.0f} ms; mean per section {", ".join(f"{v:+.2f}" for v in per)} dB')
+        log(f'  broadband check: pink noise through the model vs the part of the capture that follows the input, '
+            f'{len(sections)} sections {bbinfo["sections_vu"]} VU: {err:.2f} dB rms (1/3 octaves 63 Hz-16 kHz), '
+            f'release {best:.0f} ms; mean per section {", ".join(f"{v:+.2f}" for v in per)} dB, above 1.8 kHz '
+            f'{", ".join(f"{v:+.2f}" for v in bbinfo["treble_error_per_section_db"])} dB; total power '
+            f'{err_t:.2f} dB rms, mean per section {", ".join(f"{v:+.2f}" for v in per_t)} dB')
     else:
         model, parts = assemble(pdb_iso)
     pdb = pdb_iso * alpha
     pinfo['treble_bands_hz'] = [list(b_) for b_ in layout]
+    pinfo['treble_leak'] = leak
     pinfo['shared_fraction'] = alpha
     model.release_ms = float(bbinfo['release_ms'])
     levels_x, Hg_x, xinfo, Lgrid = parts['levels_x'], parts['Hg_x'], parts['xinfo'], parts['Lgrid']

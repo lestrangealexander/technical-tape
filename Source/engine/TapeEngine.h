@@ -83,7 +83,7 @@ private:
         // treble stage: one of these per band
         struct Treble
         {
-            Biquad hp, lp;
+            Biquad hp, lp, hpRest, lpRest;     // the band of the input; the same band of the shared signal
             Detector det;
             History lraw;
             BranchConvolver conv;

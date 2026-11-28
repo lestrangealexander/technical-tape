@@ -175,7 +175,10 @@ def write_report(path, model, dbg, r0, r6, log_lines=()):
             ('Pre-emphasis fit', esc(str(m.get('preemphasis')))),
             ('Treble stage', ('; '.join((f'{tb.fc_lo / 1000:g}-{tb.fc_hi / 1000:g} kHz' if tb.fc_hi > 0 else
                                          f'from {tb.fc_lo / 1000:g} kHz') for tb in model.treble_bands)
-                              + ': each band saturates on its own level' if getattr(model, 'treble_bands', None)
+                              + ': each band saturates on its own level'
+                              + (f', its detector also hearing {model.treble_bands[0].leak:g} of the whole signal'
+                                 if getattr(model.treble_bands[0], 'leak', 0.0) > 0 else '')
+                              if getattr(model, 'treble_bands', None)
                               else 'none')),
             ('Broadband fit (pink noise)', esc(str(m.get('broadband')))),
             ('Above the hottest capture', esc(str(m.get('extrapolation')))),

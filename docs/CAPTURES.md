@@ -1,7 +1,12 @@
 # Recording the captures
 
 Twelve files make the six models: two tapes (ATR, Maxell) × three speeds (3¾, 7½, 15 ips) ×
-two passes (normal and hot). The six ATR files are in (November 2026); the Maxell is to come.
+two passes (normal and hot). All twelve are in (November 2026). Maxell 15 ips came with two normal
+passes; the second (`MAXELL_15ips_0dB_V2.wav`) is used. It is the better take: its noise floor is
+3.7 dB lower (−80.3 against −76.6 dBFS), it has less wow and flutter (0.026 % against 0.033 %
+unweighted 2σ; largest de-warp correction 59 against 95 µs), its sweeps agree with each other
+better (0.35–0.59 against 0.44–0.61 dB rms, shallowest dropouts −1.4 against −2.1 dB) and its pink
+noise is cleaner (2 dB less of the highs that don't follow the input).
 
 ## The test file
 
@@ -50,8 +55,9 @@ is measured.
 normal pass, with the return about 13 dB lower, the same at every speed: the pipeline measured
 it from the odd harmonics and the compression, which line up between the passes to 0.5–1.5 dB
 and 0.1–0.2 dB. That is far more than +6 dB, and better for it: the ATR models are measured all
-the way to +35 VU, where a 1 kHz tone comes back nearly square. **For the Maxell, repeat exactly
-what you did for the ATR hot pass.**
+the way to +35 VU, where a 1 kHz tone comes back nearly square. The Maxell hot passes were done the
+same way: 22.9 dB hotter onto the tape, the return 12.5–12.7 dB lower, the passes agreeing to
+1.0–1.9 dB (odd harmonics) and 0.06–0.18 dB (compression); measured to +34.9 VU.
 
 ## Files
 

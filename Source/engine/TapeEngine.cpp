@@ -76,6 +76,8 @@ void Core::Channel::reset()
     {
         t.hp.reset();
         t.lp.reset();
+        t.hpRest.reset();
+        t.lpRest.reset();
         t.det.reset();
         t.lraw.reset();
         t.conv.reset();
@@ -176,6 +178,8 @@ void Core::configure (const PreparedModel* model, int osFactor)
             auto& t = c.treble[k];
             t.hp.setCoefficients (band.hpB, band.hpA);
             t.lp.setCoefficients (band.lpB, band.lpA);
+            t.hpRest.setCoefficients (band.hpB, band.hpA);
+            t.lpRest.setCoefficients (band.lpB, band.lpA);
             t.det.prepare (pm->lookAhead, pm->releaseCoef);
             t.conv.setBranch (&band.branch);
         }
@@ -358,10 +362,18 @@ void Core::processBlock (int ch, const float* x, float* y) noexcept
         c.lw[(size_t) i] = c.lraw.at ((double) (c.n - shiftLw));
         for (size_t k = 0; k < pm->treble.size(); ++k)
         {
-            // each treble band's detector: the same look-ahead detector, hearing only that band
+            // each treble band's detector: the same look-ahead detector, hearing that band, plus some of the
+            // rest of what the shared detector hears (a loud low end and midrange squash the highs too)
             auto& t = c.treble[k];
+            const auto& band = pm->treble[k];
             float v = t.hp.process (x[i] * invRefPeak);
-            if (pm->treble[k].lowPass) v = t.lp.process (v);
+            if (band.lowPass) v = t.lp.process (v);
+            if (band.leak > 0.0f)
+            {
+                float r = t.hpRest.process (vp);
+                if (band.lowPass) r = t.lpRest.process (r);
+                v += band.leak * (vp - r);
+            }
             t.lraw.push (t.det.process (v));
             t.lw[(size_t) i] = t.lraw.at ((double) (c.n - shiftLw));
         }

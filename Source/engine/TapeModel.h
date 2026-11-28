@@ -46,6 +46,7 @@ struct ModelData
     {
         float fcLo = 0.0f, fcHi = 0.0f;
         Branch branch;
+        float leak = 0.0f;               // how much of the shared detector's pre-emphasised signal it also hears
     };
     std::vector<TrebleBand> treble;
     bool hasTreble() const noexcept { return ! treble.empty(); }
@@ -108,6 +109,7 @@ struct PreparedModel
         double hpB[3] = { 1.0, 0.0, 0.0 }, hpA[3] = { 1.0, 0.0, 0.0 };
         double lpB[3] = { 1.0, 0.0, 0.0 }, lpA[3] = { 1.0, 0.0, 0.0 };
         bool lowPass = false;
+        float leak = 0.0f;
     };
     std::vector<TrebleBand> treble;
 

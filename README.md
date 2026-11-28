@@ -8,13 +8,13 @@ pre-emphasised signal (so high frequencies saturate first, as on tape), alias-fr
 measured wow and flutter, and a saturation curve that keeps going past the hottest capture.
 `docs/DESIGN.md` has the research, the design and the validation figures.
 
-**Status:** the three ATR models (3¾, 7½ and 15 ips) are built from the real captures, measured
-from −30 VU to about +35 VU: the hot passes went onto the tape 22½ dB above the normal ones, so the
-whole drive range of the INPUT knob is measured rather than extrapolated. A treble stage lets the
-highs saturate on their own level, as on tape (in two bands at 3¾ ips, where the top octave
-saturates apart from the octave below it), so busy material at the slower speeds behaves like the
-machine. MAXELL is greyed out until its captures are in. MENU > Tape models shows what each
-model is.
+**Status:** all six models, ATR and Maxell at 3¾, 7½ and 15 ips, are built from the real captures,
+measured from −30 VU to about +35 VU: the hot passes went onto the tape about 22½ dB above the
+normal ones, so the whole drive range of the INPUT knob is measured rather than extrapolated. A
+treble stage lets the highs saturate on their own level and on how loud everything else is, as on
+tape (in two bands at 3¾ ips, where the top octave saturates apart from the octave below it). Its
+fit matches the part of the machine's treble that still follows the input, so the plugin's highs
+are no brighter than the machine's when driven. MENU > Tape models shows what each model is.
 
 The Mac build is AU and VST3, universal for Apple Silicon and Intel, and needs macOS 11 or later.
 The Windows build is a 64-bit VST3 for Windows 10 or 11. Builds are for personal use, so they are
@@ -55,7 +55,7 @@ Presets are stored in `~/Library/Audio/Presets/Sound Aquarium/Technical Tape` (M
 
 | Control | What it does |
 |---|---|
-| ATR / MAXELL | the tape (the supply reel changes with it); MAXELL is greyed out until its captures are in |
+| ATR / MAXELL | the tape (the supply reel changes with it) |
 | 3¾ / 7½ / 15 | tape speed |
 | INPUT | how hard the tape is driven (−18 … +18 dB); 0 VU = −18 dBFS RMS. At 15 ips the ATR stays under 1 % distortion to about +6 VU, saturates from +9 VU and is close to square-wave clipping above +25 VU; all of it is measured |
 | OUTPUT | output level (−18 … +18 dB) |

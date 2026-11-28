@@ -91,10 +91,11 @@ std::string parseModel (const void* data, size_t size, ModelData& out)
     if (size < 8 || std::memcmp (b, "TTM1", 4) != 0) return "not a Technical Tape model";
     Reader top { b, size, 4 };
     const auto version = top.get<uint32_t>();
-    if (version < 2 || version > 4) return "unsupported model version " + std::to_string (version);
+    if (version < 2 || version > 5) return "unsupported model version " + std::to_string (version);
     static std::atomic<uint64_t> serials { 0 };
     bool haveHead = false;
-    std::vector<std::pair<float, float>> trebleFc;
+    struct TrebleSpec { float lo, hi, leak; };
+    std::vector<TrebleSpec> trebleFc;
     std::vector<ModelData::Branch> trebleBr;
     out = ModelData();
     out.serial = ++serials;
@@ -154,9 +155,11 @@ std::string parseModel (const void* data, size_t size, ModelData& out)
         {
             const float lo = r.get<float>();
             const float hi = len >= 8 ? r.get<float>() : 0.0f;
+            const float leak = len >= 12 ? r.get<float>() : 0.0f;
             const float top = 0.45f * (float) out.sampleRate;
             if (! (lo > 0.0f && lo < top && (hi == 0.0f || (hi > lo && hi < top)))) return "bad treble band";
-            trebleFc.emplace_back (lo, hi);
+            if (! (leak >= 0.0f && leak <= 4.0f)) return "bad treble leak";
+            trebleFc.push_back ({ lo, hi, leak });
         }
         else if (t == "FLUT")
         {
@@ -194,7 +197,7 @@ std::string parseModel (const void* data, size_t size, ModelData& out)
     if (trebleFc.size() != trebleBr.size() || (int) trebleFc.size() > ModelData::kMaxTrebleBands)
         return "incomplete treble stage";
     for (size_t k = 0; k < trebleFc.size(); ++k)
-        out.treble.push_back ({ trebleFc[k].first, trebleFc[k].second, std::move (trebleBr[k]) });
+        out.treble.push_back ({ trebleFc[k].lo, trebleFc[k].hi, std::move (trebleBr[k]), trebleFc[k].leak });
     std::sort (out.branches.begin(), out.branches.end(), [] (const auto& a, const auto& c) { return a.order < c.order; });
     return {};
 }
@@ -271,6 +274,7 @@ std::shared_ptr<const PreparedModel> PreparedModel::build (const ModelData& m, d
         Biquad::highPass ((double) band.fcLo, fs, tb.hpB, tb.hpA);
         tb.lowPass = band.fcHi > 0.0f;
         if (tb.lowPass) Biquad::lowPass ((double) band.fcHi, fs, tb.lpB, tb.lpA);
+        tb.leak = band.leak;
         pm->treble.push_back (std::move (tb));
     }
     return pm;

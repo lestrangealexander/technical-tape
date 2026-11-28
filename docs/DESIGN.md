@@ -68,9 +68,9 @@ saturate depends on what else is in the signal.
 | Kernels per level | Raw harmonic IRs per dynamic step | Generalised Hammerstein branches in **Chebyshev form**, one kernel set per detector level, from synchronised swept-sine separation with the exact harmonic phase (Novak 2015). Branch `n` is fed `μL·T_n(x_p / μL)`: the kernels are then the measured harmonic responses re-indexed, with no ill-conditioned power-series inversion |
 | Blending levels | Discrete steps crossfaded ("Liquidity") | Continuous and per sample: Catmull-Rom interpolation across a 1.5 dB level grid. A branch whose kernels are low-rank across levels is stored as an SVD basis (≤ 4 kernels, −70 dB residual re the fundamental); the others keep one kernel per level. No stepping, no crossfade phasing |
 | Level detector | Envelope with attack/release | 1 ms look-ahead peak envelope of the *pre-emphasised* signal (analytic envelope, so no ripple on steady tones; inter-sample peaks covered), 60 ms release. The Chebyshev argument never leaves [−1, 1] |
-| Frequency-dependent saturation | One broadband level | A pre-emphasis estimate `P(f)`, fitted from the captures by **iso-compression** (how much earlier each band reaches the same compression as 1 kHz), then split: the share `α` that is record pre-emphasis into the shared saturation (the highs push the whole signal into it) feeds the detector and the nonlinearity, `αP·x`; the rest is the tape's own high-frequency saturation (self-erasure), which depends on the highs' own level. A **treble stage** carries it: a second detector hears only the highs (through a high-pass at `f_c`) and indexes the treble share of the fundamental, so loud bass no longer squashes the cymbals. Single tones are exact for any `α` and `f_c`, so both are fitted on the capture's pink noise |
+| Frequency-dependent saturation | One broadband level | A pre-emphasis estimate `P(f)`, fitted from the captures by **iso-compression** (how much earlier each band reaches the same compression as 1 kHz), then split: the share `α` that is record pre-emphasis into the shared saturation (the highs push the whole signal into it) feeds the detector and the nonlinearity, `αP·x`; the rest is the tape's own high-frequency saturation (self-erasure), which depends on the highs' own level. A **treble stage** carries it: band detectors hear the highs (through a high-pass at `f_c`) plus a fitted *leak* of everything else, and index the treble share of the fundamental, so the highs saturate on their own level and as much more as a loud low end and midrange squash them on the machine. Single tones are exact for any `α`, `f_c` and leak, so all three are fitted on the capture's pink noise |
 | Beyond the hottest capture | Last step held | A two-parameter saturation curve (onset, knee) is fitted to how the fundamental and 3rd harmonic change over the top 12 dB captured, at every frequency at once; every response is continued to at least +45 VU by that curve's own growth at each frequency's pre-emphasised level (bands already saturated go to a ceiling). Driving harder keeps compressing instead of freezing |
-| Broadband behaviour | — | The capture's own pink-noise sections (0 and +3 VU, and the hot pass's from 3 dB under the normal pass's top up) are run through the model and compared in 1/3 octaves; the pre-emphasis share `α` and the detector release are chosen there (tones depend on neither), and the remaining error is reported per model |
+| Broadband behaviour | — | The capture's own pink-noise sections (from −10 VU, and the hot pass's from 3 dB under the normal pass's top up) are run through the model and compared in 1/3 octaves from 63 Hz to 16 kHz, on the part of the machine's output that follows the input (its flutter taken out first): the treble layout and leak, the pre-emphasis share `α` and the detector release are chosen there (tones depend on none of them), and the remaining error is reported per model. On tape a growing share of the highs stops following the input as the level rises (distortion products, and the tape's own modulation of the highs: at 3¾ ips about half the power above 6 kHz at 0 VU). The model can't make that part. Matching total power had it make up the difference with clean treble: too much top end, more so the slower the speed and the higher the level (0.9.1–0.9.2) |
 | Harmonic orders | Up to 9 | Up to 15; each model keeps the orders that rise above −80 dB re the fundamental |
 | Aliasing | Historically none handled; Hyper 3 adds anti-aliasing | Each order runs at the lowest power-of-two rate where it cannot alias (`n ≤ 2r − 1`), capped by the OS setting; 8× covers every order up to 15. Linear-phase −120 dB filters whose stopband starts *at* Nyquist |
 | Dynamic range of captures | Repeats | Two passes (normal and hot). The hot pass's offsets are *measured*, not assumed: the input offset (searched over −3…+36 dB) from how the odd harmonics and the compression grow with level, the output offset from the gain at matching tape levels, then time and smooth phase per order. The normal pass stands up to its top level and the hot pass carries on above it; where both cover a level they are not averaged, because the hot pass is played back at another level and the 2nd harmonic, which partly comes from after the tape, follows the playback level |
@@ -106,15 +106,18 @@ in ─► INPUT ─► ÷ refPeak ─► P(f) (min-phase FIR) ─► x_p
   interpolated at that sample's input time, so every rate sees the same envelope.
 - Treble stage: one or more bands, lowest first. Band `k`'s detector hears the signal through
   `W_k`, a 2nd-order Butterworth high-pass at its `f_lo` and, when another band sits above it, a
-  low-pass at its `f_hi`; its level `L_k` is delayed exactly like `L`. The fundamental's response
+  low-pass at its `f_hi`, plus the leak `β` times the rest of what the shared detector hears (`x_p`
+  with that band taken out: a loud low end and midrange squash the highs too), so
+  `W_k = W_b + β·P·(1 − W_b)` with `W_b` the band's filters; its level `L_k` is delayed exactly
+  like `L`. The fundamental's response
   is split with `s(f; f_c) = (f/f_c)⁴ / (1 + (f/f_c)⁴)`: `1 − s(f; f_lo,1)` stays in branch 1
   (indexed by `L`), band `k` takes `s(f; f_lo) − s(f; f_hi)` into its own kernels (indexed by
   `L_k`). A sine at `f` of level `A` reads `A + |W_k(f)|` dB on band `k`'s detector, so its kernel
   at band level `λ` is the measured fundamental at input level `λ − |W_k(f)|`: single tones are
   unchanged. The treble kernels are 512, 1024 or 2048 taps: the shortest that leaves no more of a
   band's response outside its window than the band-edge pre-ringing ahead of the pre-delay, which
-  no causal window keeps (2048 at 15 and 7½ ips; 1024 for each of the two bands at 3¾ ips, the same
-  pink noise to 0.01 dB as 2048 and a difference 36 dB down in the highs). A band costs an eighth
+  no causal window keeps (at 3¾ ips in 0.9.2, 1024 instead of 2048 gave the same pink noise to
+  0.01 dB and a difference 36 dB down in the highs). A band costs an eighth
   to a quarter of branch 1. Only the selected speed's model runs, so a band costs CPU only at its
   own speed.
 
@@ -143,13 +146,17 @@ in ─► INPUT ─► ÷ refPeak ─► P(f) (min-phase FIR) ─► x_p
 7. **Fit `P(f)`** by iso-compression at −0.25 … −4 dB (monotone curves, 1/6-octave bands to
    18 kHz, peak-preserving smoothing). Falls back to flat if it doesn't explain the data.
 8. **Continue above the hottest capture** (section 2): to at least +45 VU, in 3 dB steps.
-8b. **Broadband fit.** Pink noise from the capture against the model (section 2): first the
-    treble stage's layout (one band from 5 or 10 kHz at 15 ips, from 2.5 or 5 kHz at 7½ ips: the
-    same recorded wavelengths; at 3¾ ips two bands, 5–10 kHz and 10 kHz up or 4–8 kHz and 8 kHz
-    up) together with the share `α` of `P` that feeds the shared saturation (½, ¼ and 0, then
-    ±¼ around the best), then the detector release (the shortest of 20–100 ms within 0.02 dB of the best fit: a longer
-    release holds the level up after transients). The error is reported in the build log and the
-    QC report.
+8b. **Broadband fit.** Pink noise from the capture against the model (section 2), on the part of
+    the capture that follows the input: its flutter is taken out (the delay tracked against the
+    test signal in 1–5 kHz) and each 1/3 octave's coherent power `|Pxy|²/Pxx` is compared, from
+    −10 VU up and from 63 Hz to 16 kHz. First the treble stage's layout (one band from 5 or 10
+    kHz at 15 ips, from 2.5 or 5 kHz at 7½ ips: the same recorded wavelengths; at 3¾ ips two
+    bands, 5–10 kHz and 10 kHz up or 4–8 kHz and 8 kHz up) together with the share `α` of `P`
+    that feeds the shared saturation (½, ¼ and 0, then ±¼ around the best); then, for the best of
+    those, the leak (0.1, 0.2, 0.35, 0.6: only the treble kernels change), and `α` ±¼ again at
+    that leak; then the detector release (the shortest of 20–100 ms within 0.02 dB of the best
+    fit: a longer release holds the level up after transients). The error, coherent and total
+    power, is reported in the build log and the QC report.
 9. **Re-index, rescale, invert.** For each detector level each harmonic is taken at the input
    level that puts its pre-emphasised amplitude there, divided by `P` (magnitude and `m·∠P`),
    converted to the `μ`-scaled Chebyshev basis and un-mixed (a triangular matrix).
@@ -200,62 +207,95 @@ checked against the model's: per-band variance within ±10 % from 0.2 to 100 Hz.
   longest kernel and then crossfades over ≈ 40 ms: no click, no gap (measured: nothing above
   −130 dB re the signal in the 14 kHz+ band around a switch).
 
-## 8. Model file (`.ttm`, version 4)
+## 8. Model file (`.ttm`, version 5)
 
 Little-endian tagged chunks: `TTM1` + version, `HEAD` (sample rate, reference peak, level
 grid, pre-delay, look-ahead, release, captured range, margin), `PEMP` (|P| on a log-frequency
 grid), `BRCH` × K (order, mode, count, length, float16 kernels, float32 basis weights for
-mode 0), a `TRBL` (the band's high-pass and low-pass frequencies) and `BRHF` (its kernels, laid
-out like `BRCH`) pair per treble band, `FLUT` (peaks, continuum, max delay), `AGTB` (auto-gain
-table) and `META` (JSON provenance and QC). Version 2 (no treble stage) and 3 (one treble band,
-high-pass only) models still load. `Tools/pipeline/ttm.py` writes it; `Source/engine/TapeModel.cpp` reads it.
+mode 0), a `TRBL` (the band's high-pass and low-pass frequencies and its leak) and `BRHF` (its
+kernels, laid out like `BRCH`) pair per treble band, `FLUT` (peaks, continuum, max delay), `AGTB`
+(auto-gain table) and `META` (JSON provenance and QC). Version 2 (no treble stage), 3 (one treble
+band, high-pass only) and 4 (no leak) models still load. `Tools/pipeline/ttm.py` writes it; `Source/engine/TapeModel.cpp` reads it.
 
 ## 9. Validation
 
-### On the real ATR captures (November 2026)
+### On the real captures (November 2026)
 
 The reference is the capture itself. `Tests/validate_capture.py` plays the capture's own steady
 tones through the model at the level they went onto the tape; the build's broadband fit plays its
-pink-noise sections through it.
+pink-noise sections through it and compares the part of the machine's output that follows the
+input (section 4, step 8b).
+
+**ATR**
 
 | | 15 ips | 7½ ips | 3¾ ips |
 |---|---|---|---|
 | Hot pass onto the tape / played back | +22.7 / −13.3 dB | +22.4 / −13.1 dB | +22.3 / −12.9 dB |
 | Passes agree where they overlap (odd harmonics / compression) | 1.5 / 0.11 dB rms | 1.2 / 0.09 dB rms | 0.7 / 0.23 dB rms |
 | Captured range | −30 … +34.7 VU | −30 … +34.4 VU | −30 … +34.2 VU |
-| 1 kHz at 0 VU: level; H2, H3 capture → model; waveform match | +0.1 dB; −49.4 → −49.1, −46.5 → −46.5 dB; −69 dB | 0.0 dB; −49.3 → −49.2, −49.6 → −50.3 dB; −66 dB | −0.3 dB; −46.5 → −46.7, −43.2 → −43.6 dB; −58 dB |
-| 3.15 kHz at −10 VU: H3 capture → model; waveform match | −65.0 → −64.6 dB; −73 dB | −60.5 → −60.1 dB; −62 dB | −48.2 → −46.2 dB; −56 dB |
-| 1 kHz at +22 VU (nearly square): level; THD capture → model; waveform match | +0.1 dB; −8.7 → −8.9 dB; −39 dB | +0.1 dB; −12.8 → −13.0 dB; −36 dB | −0.5 dB; −17.0 → −16.7 dB; −34 dB |
-| Treble stage (crossovers) and shared pre-emphasis `α`, fitted | 10 kHz, 0 | 5 kHz, ¼ | 5–10 kHz and 10 kHz up, ½ |
-| Pink noise, 1/3-octave rms, all five sections | 0.60 dB | 0.99 dB | 2.95 dB |
-| … mean per section at 0 / +3 / +12 / +22 / +25 VU | −0.01 / −0.03 / −0.17 / −0.22 / −0.23 dB | −0.09 / −0.14 / −0.18 / +0.24 / +0.88 dB | −0.03 / −0.71 / +0.09 / +3.20 / +4.33 dB |
-| … 2–10 kHz only, at 0 / +3 / +12 VU | 0.3 / 0.5 / 0.7 dB | 0.4 / 0.7 / 1.2 dB | 1.1 / 2.0 / 2.5 dB |
-| … with one treble band (from 2.5 kHz, as in 0.9.1) | | | 3.12 dB; 2–10 kHz 2.4 / 3.1 / 3.4 dB |
-| … without the treble stage (best `α`) | 0.76 dB | 1.58 dB | 3.40 dB |
-| … with all of `P` shared (`α` = 1), no treble stage | 1.56 dB | 4.24 dB | 6.57 dB |
+| 1 kHz at 0 VU: level; H2, H3 capture → model; waveform match | +0.1 dB; −49.4 → −49.1, −46.5 → −46.5 dB; −70 dB | 0.0 dB; −49.3 → −49.2, −49.6 → −50.3 dB; −66 dB | −0.3 dB; −46.5 → −46.7, −43.2 → −43.6 dB; −58 dB |
+| 3.15 kHz at −10 VU: level; H3 capture → model; waveform match | +0.1 dB; −65.0 → −64.6 dB; −73 dB | −0.2 dB; −60.5 → −60.1 dB; −62 dB | +0.2 dB; −48.2 → −46.2 dB; −56 dB |
+| 1 kHz at +22 VU (nearly square): level; THD capture → model; waveform match | +0.1 dB; −8.7 → −8.8 dB; −39 dB | +0.1 dB; −12.8 → −13.0 dB; −35 dB | −0.5 dB; −17.0 → −16.7 dB; −34 dB |
+| Treble stage: bands, leak, shared pre-emphasis `α` (fitted) | 10 kHz up; 0.35; ¼ | 5 kHz up; 0; ½ | 5–10 kHz and 10 kHz up; 0.35; ½ |
+| Pink noise, the part that follows the input, 1/3-octave rms (63 Hz–16 kHz, six sections) | 0.62 dB | 1.49 dB | 3.29 dB |
+| … mean per section at −10 / 0 / +3 / +12 / +22 / +25 VU | −0.07 / −0.05 / −0.10 / −0.41 / −0.30 / −0.36 dB | +0.01 / −0.38 / −0.65 / −1.53 / −0.86 / +0.12 dB | −0.36 / +0.17 / −0.10 / +2.08 / +3.88 / +3.98 dB |
+| … above 1.8 kHz | −0.02 / −0.22 / −0.33 / −0.27 / +0.25 / +0.33 dB | +0.01 / −0.86 / −1.19 / −1.68 / −0.43 / +0.49 dB | −0.96 / +0.39 / +0.40 / +2.09 / +2.69 / +2.35 dB |
+| … total power instead, rms | 0.75 dB | 1.67 dB | 3.62 dB |
 | Wow & flutter measured (unweighted 2σ / weighted rms) | 0.031 / 0.010 % | 0.055 / 0.013 % | 0.147 / 0.036 % |
+
+**Maxell** (15 ips from the second normal pass, `V2`: see `docs/CAPTURES.md`)
+
+| | 15 ips | 7½ ips | 3¾ ips |
+|---|---|---|---|
+| Hot pass onto the tape / played back | +22.9 / −12.7 dB | +22.9 / −12.5 dB | +22.9 / −12.6 dB |
+| Passes agree where they overlap (odd harmonics / compression) | 1.9 / 0.06 dB rms | 1.3 / 0.09 dB rms | 1.0 / 0.18 dB rms |
+| Captured range | −30 … +34.9 VU | −30 … +34.8 VU | −30 … +34.9 VU |
+| 1 kHz at 0 VU: level; H2, H3 capture → model; waveform match | 0.0 dB; −50.0 → −49.9, −53.5 → −54.4 dB; −68 dB | +0.2 dB; −49.8 → −49.8, −54.1 → −54.6 dB; −72 dB | +0.2 dB; −47.1 → −47.8, −45.1 → −44.4 dB; −61 dB |
+| 3.15 kHz at −10 VU: level; H3 capture → model; waveform match | +0.2 dB; −69.4 → −68.7 dB; −70 dB | 0.0 dB; −63.0 → −64.9 dB; −60 dB | +2.5 dB; −52.7 → −48.7 dB; −56 dB |
+| 1 kHz at +22 VU (nearly square): level; THD capture → model; waveform match | +0.2 dB; −8.1 → −8.0 dB; −37 dB | −0.2 dB; −11.7 → −11.7 dB; −36 dB | −0.4 dB; −16.4 → −16.2 dB; −37 dB |
+| Treble stage: bands, leak, shared pre-emphasis `α` (fitted) | 10 kHz up; 0.35; ½ | 5 kHz up; 0.1; ½ | 5–10 kHz and 10 kHz up; 0.35; ¾ |
+| Pink noise, the part that follows the input, 1/3-octave rms (63 Hz–16 kHz, six sections) | 0.70 dB | 1.34 dB | 3.42 dB |
+| … mean per section at −10 / 0 / +3 / +12 / +22 / +25 VU | −0.05 / −0.03 / −0.09 / −0.27 / −0.19 / −0.26 dB | +0.06 / −0.33 / −0.85 / −1.02 / −0.19 / +0.66 dB | +0.25 / −0.50 / −0.97 / −0.46 / +2.94 / +3.07 dB |
+| … above 1.8 kHz | −0.03 / −0.07 / −0.12 / +0.25 / +0.77 / +0.76 dB | +0.10 / −0.76 / −1.77 / −1.38 / −0.08 / +1.15 dB | +0.50 / +1.65 / +1.88 / +1.19 / +4.37 / +4.56 dB |
+| … total power instead, rms | 0.67 dB | 1.47 dB | 3.92 dB |
+| Wow & flutter measured (unweighted 2σ / weighted rms) | 0.026 / 0.008 % | 0.055 / 0.012 % | 0.152 / 0.040 % |
 
 What the numbers say. Single tones are reproduced at every level the machine was driven to,
 including the hot pass's near-square 1 kHz tone with its droop and overshoot; the treble stage
-leaves them exactly as they were. Dense material is very close at 15 ips. At the slower speeds
-the tape's own high-frequency saturation (self-erasure) is strong; the treble stage lets the highs
-saturate on their own level, which took the 7½ ips error from 1.58 to 0.99 dB: at 0 / +3 VU its
-top octave, 1–3 dB over-compressed with one detector, is now within about 1 dB. At 3¾ ips the
-highs saturate on their own in two places, the top octave apart from the octave below it, so the
-treble stage has two bands there (0.9.2). That halves the error of the 2–10 kHz bands at 0 VU (2.4
-→ 1.1 dB rms): one band from 2.5 kHz left 2.5–6 kHz 1–2.3 dB too loud and the 10 kHz band 5–7
-dB over-compressed; with two, 8 kHz is within about 1 dB at 0 / +3 VU and 10 kHz is 2–5 dB
-over-compressed. Single tones are unchanged (levels within 0.2 dB of 0.9.1; steady tones from 5
-to 12.5 kHz stay within 0.6 dB of the capture's own response). At +22 VU and above the lows and
-mids still come out 3–6 dB less compressed (section 10). The second harmonic above about 4 kHz is gated
-conservatively at the slow speeds, where flutter residue raises the noise estimate: it comes out
-up to 9 dB lower than measured at −10 VU (7½ ips: −58 → −67 dB at 6.3 kHz).
+leaves them exactly as they were. (Maxell 3¾ ips is the exception at 3.15 kHz, −10 VU: its sweeps
+wander ±1 dB from one level to the next around 2–4 kHz, the tape's contact at that speed, and the
+model follows them, so the steady tone comes out 2.5 dB above the capture's.) Dense material is
+very close at 15 ips, on both tapes. At the slower speeds the tape's own high-frequency saturation
+is strong and a growing share of the highs stops following the input as the level goes up: at 3¾
+ips about half the power above 6 kHz at 0 VU, at 7½ and 15 ips a quarter to a half when driven
+hard (+22 VU). The model can't make that part. Up to 0.9.2 the fit matched total power, so the
+model made up for it with clean treble; matched on the part that follows the input, ATR 3¾ ips's
+clean highs against the machine's (dB, per 1/3 octave, C++ engine at 8×, flutter taken out of the
+capture):
 
-The C++ engine matches the Python reference on the real models to −110 dB (3¾ ips, both treble
-bands included) and runs them at about 3× real time in stereo at 8× oversampling on one 2.3 GHz
-core of the build server. At 3¾ ips the second treble band costs 2 % (8×) to 4 % (1×) more
-instructions than 0.9.1's single band, counted with callgrind: its two bands' kernels are 1024
-taps each where the single band's were 2048. The 7½ and 15 ips models are unchanged.
+| ATR 3¾ ips | 5 kHz | 6.3 kHz | 8 kHz | 10 kHz |
+|---|---|---|---|---|
+| 0 VU, 0.9.2 → 0.9.3 | +2.9 → +2.4 | +3.7 → +2.6 | +4.4 → −0.4 | +2.7 → −1.2 |
+| +3 VU | +3.7 → +2.7 | +4.8 → +2.8 | +4.5 → −2.4 | +3.2 → +0.6 |
+| +12 VU | +3.6 → +0.4 | +9.4 → +2.2 | +10.2 → +4.6 | +2.5 → −0.1 |
+| +22 VU | +0.3 → −1.4 | +5.3 → +4.4 | +8.5 → +9.0 | +7.8 → +6.6 |
+
+At 15 ips the hard-driven top octave (12.5 and 16 kHz at +22 and +25 VU) went from +2.2 … +3.3 dB
+to −0.5 … +1.1 dB; at 0 and +3 VU it was and is within 0.7 dB. At 7½ ips 2–10 kHz is within about
+1 dB at every level, as it was. What is left: at 3¾ ips driven hard (+22 VU and up) the highs are
+still 4–9 dB too bright and the lows and mids 3–6 dB less compressed than the machine's (section
+10); Maxell 3¾ ips at 0 and +3 VU is 5–11 dB too bright at 10–13 kHz, where nearly all of the
+machine's output no longer follows the input; at 7½ ips the top octave is darker than the
+machine's at normal levels (1–8 dB at 12.5–16 kHz). Because the model can't make the smeared
+part, its total treble power at the slow speeds is lower than the machine's (ATR 3¾ ips 1–1.7 dB
+at 0 and +3 VU). The second harmonic above about 4 kHz is gated conservatively at the slow speeds,
+where flutter residue raises the noise estimate: it comes out up to 9 dB lower than measured at
+−10 VU (7½ ips: −58 → −67 dB at 6.3 kHz).
+
+The C++ engine matches the Python reference on the real models to −110 dB (treble bands and leak
+included: ATR 3¾ ips −110.5, Maxell 15 ips −112.4, Maxell 3¾ ips −109.8 dB) and runs them at about
+3× real time in stereo at 8× oversampling on one 2.3 GHz core of the build server. The leak costs
+nothing measurable (ATR 3¾ ips: 0.05 % more instructions than 0.9.2, counted with callgrind).
 
 ### On the virtual tape machine
 
@@ -301,11 +341,18 @@ real ATR 3¾ ips model.
   and the per-level phase capture is approximated (see the null figures above).
 - Above the hottest capture the curve is a fit, not a measurement: the hot pass matters (the
   ATR's reach about +35 VU, past any INPUT setting with normal levels).
-- Dense material at 3¾ ips (section 9): with two treble bands the 10 kHz band still comes out
-  2–5 dB over-compressed at +3 and +12 VU, and 4 kHz 2–4 dB. At +22 VU and above dense material
-  comes out 3–6 dB less compressed than the machine's in the lows and mids; no treble layout
-  changes that, so it would need another mechanism (for instance, how much of the highs push the
-  whole signal into saturation depending on level).
+- The part of the machine's highs that stops following the input as the level rises (its
+  distortion products and its own modulation of the highs) is not made: the model gives the part
+  that follows, matched, and leaves the rest out rather than standing in for it with clean treble.
+- At 3¾ ips driven hard (+22 VU and up) the highs are still 4–9 dB brighter than the part of the
+  machine's that follows the input, and the lows and mids 3–6 dB less compressed; no treble layout
+  or leak changes that, so it needs another mechanism. Maxell 3¾ ips at 0–3 VU is 5–11 dB too
+  bright at 10–13 kHz: the leak, as it is (the rest of the shared signal: that band taken out of
+  it), still carries most of the 10–13 kHz content because the band's high-pass is gentle and the
+  pre-emphasis there is +16 dB. A leak from a low-pass of the shared signal well under the band
+  (only the low end and midrange) is the next step, with the 7½ ips top octave (too dark at
+  normal levels, one band from 5 kHz) and smoothing the Maxell 3¾ ips sweeps across the levels
+  where the tape is linear.
 - Above the normal pass's top (+12 VU) the 2nd harmonic is the hot pass's, which was played back
   13 dB lower; the part of it that follows the playback level (about −37 dB at +12 VU) is lower
   there than the machine at its normal playback level would give, 15 dB or more under the tape's
