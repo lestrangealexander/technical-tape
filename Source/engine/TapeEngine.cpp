@@ -155,11 +155,6 @@ void Core::configure (const PreparedModel* model, int osFactor)
     for (int ri = 1; ri < 5; ++ri)
         dUp[ri] = upDelay (ri) + (double) osf::kPadAtRate[ri] / (double) (1 << ri);
     shiftLw = osf::kLatency + pm->preDelay - (pm->lookAhead - 1);
-    for (size_t k = 0; k < pm->treble.size(); ++k)
-    {
-        const int w = pm->treble[k].rmsWindow;
-        shiftTreble[k] = shiftLw - std::min (w > 0 ? (w - 1) / 2 : 0, shiftLw);
-    }
     invRefPeak = 1.0f / pm->refPeak;
     for (auto& c : chans)
     {
@@ -185,7 +180,8 @@ void Core::configure (const PreparedModel* model, int osFactor)
             t.lp.setCoefficients (band.lpB, band.lpA);
             t.hpRest.setCoefficients (band.hpB, band.hpA);
             t.lpRest.setCoefficients (band.lpB, band.lpA);
-            t.det.prepare (pm->lookAhead, pm->releaseCoef, band.rmsWindow, band.peakMix);
+            t.det.prepare (pm->lookAhead, pm->releaseCoef, band.rmsWindow, band.peakMix, shiftLw);
+            shiftTreble[k] = shiftLw - t.det.advance();
             t.conv.setBranch (&band.branch);
         }
     }

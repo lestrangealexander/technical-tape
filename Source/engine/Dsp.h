@@ -130,19 +130,20 @@ private:
 /** The look-ahead peak detector of the pre-emphasised signal:
     max(analytic envelope, |x|) -> sliding max over A -> moving average over A -> exponential release.
     With an energy window W > 0 the envelope is sqrt(2 * mean(x^2)) over the last W samples instead (a sine
-    reads its peak), mixed with peakMix of the peak envelope delayed by (W - 1) / 2 samples to line up with
-    the window's middle; the caller reads the result (W - 1) / 2 samples late, so that it is centred.
+    reads its peak), mixed with peakMix of the peak envelope. The caller reads the result advance() samples
+    late: (W - 1) / 2, so that the window is centred, or as much of it as its look-ahead allows (maxAdvance);
+    the peak envelope is delayed by the same, so it keeps all of its look-ahead whatever the window.
     Same as refengine.detector(). prepare() allocates only beyond what an earlier prepare() did. */
 class Detector
 {
 public:
-    void prepare (int lookAhead, float releaseCoef, int rmsWindow = 0, float peakMix = 0.0f)
+    void prepare (int lookAhead, float releaseCoef, int rmsWindow = 0, float peakMix = 0.0f, int maxAdvance = 1 << 30)
     {
         A = std::max (1, lookAhead);
         rel = releaseCoef;
         W = std::max (0, rmsWindow);
         mix = W > 0 ? std::clamp (peakMix, 0.0f, 1.0f) : 0.0f;
-        H = W > 0 ? (W - 1) / 2 : 0;
+        H = W > 0 ? std::min ((W - 1) / 2, std::max (0, maxAdvance)) : 0;
         envRing.assign ((size_t) A, 0.0f);
         maxRing.assign ((size_t) A, 0.0f);
         sqRing.assign ((size_t) std::max (W, 1), 0.0);
@@ -165,6 +166,8 @@ public:
         sqSum = 0.0;
         prev = 0.0f;
     }
+
+    int advance() const noexcept { return H; }
 
     float process (float x) noexcept
     {

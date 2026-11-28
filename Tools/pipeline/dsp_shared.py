@@ -178,10 +178,16 @@ def treble_shares(freqs, bands):
     return main, [treble_split(freqs, lo) - treble_split(freqs, hi) for lo, hi in bands]
 
 
+LOOP_RMS_DBFS = -22.0
+
+
 def program_loop(sec=6.0, fs=48000, seed=3):
     """A music-like loop for calibrating auto gain: kick, bass line, snare, hats, a cymbal wash and chords
     at 100 bpm, equalised to a typical mix's long-term spectrum (per 1/3 octave re 63 Hz: 125 Hz -1, 250 Hz
-    -3, 500 Hz -6, 1 kHz -9, 2 kHz -12, 4 kHz -16, 8 kHz -21, 16 kHz -29 dB), -18 dBFS RMS (0 VU).
+    -3, 500 Hz -6, 1 kHz -9, 2 kHz -12, 4 kHz -16, 8 kHz -21, 16 kHz -29 dB), at LOOP_RMS_DBFS: its
+    loud parts about 0 VU, the level a mix was recorded through the machine at (-21.8 dBFS RMS, loud parts
+    -19.3 dBFS over 400 ms; at -18 dBFS RMS the loop ran 4 dB hotter than that mix, and auto gain left the
+    mix 4 dB louder at INPUT +18 at 3.75 ips).
     Pink noise has far more treble than music; this has a mix's balance and dynamics. Deterministic."""
     n = int(fs * sec)
     t = np.arange(n) / fs
@@ -233,7 +239,7 @@ def program_loop(sec=6.0, fs=48000, seed=3):
     fr = np.concatenate([[0], cent, [fs / 2]]) / (fs / 2)
     h = ss.firwin2(4097, fr, 10 ** (np.concatenate([[gain_db[0]], gain_db, [gain_db[-1]]]) / 20))
     mix = ss.fftconvolve(mix, h, 'same')
-    return mix * 10 ** (-18 / 20) / np.sqrt(np.mean(mix ** 2))
+    return mix * 10 ** (LOOP_RMS_DBFS / 20) / np.sqrt(np.mean(mix ** 2))
 
 
 def k_loudness_db(x):

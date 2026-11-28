@@ -176,7 +176,9 @@ def _music_summary(mu):
             f'{pr[0]:+.1f} / {pr[1]:+.1f} dB (machine / model)'
             for lv, e, t, tm, pr in zip(mu['passes_db'], mu['error_per_pass_db'], mu['treble_error_per_pass_db'],
                                         mu['top_machine_model_db'], mu['presence_machine_model_db'])]
-    return html.escape(f'{mu["error_db"]:.2f} dB rms over 1/3 octaves 63 Hz-16 kHz and passes; ') + '<br>' + \
+    return html.escape(f'{mu["error_db"]:.2f} dB rms over 1/3 octaves 63 Hz-16 kHz and passes, total power'
+                       + (f' ({mu["outside_machine_db"]:.2f} dB outside the machine\'s: what the fit minimises)'
+                          if mu.get('outside_machine_db') is not None else '') + '; ') + '<br>' + \
         '<br>'.join(html.escape(r) for r in rows)
 
 

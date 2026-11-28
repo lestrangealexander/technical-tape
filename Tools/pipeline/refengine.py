@@ -33,21 +33,20 @@ def look_ahead(model, fs):
     return max(1, min(LOOK_AHEAD_MAX, int(round(model.look_ahead_ms * 1e-3 * fs))))
 
 
-def detector(vp, A, fs, release_ms, rms_w=0, peak_mix=0.0):
+def detector(vp, A, fs, release_ms, rms_w=0, peak_mix=0.0, advance=0):
     """Look-ahead peak envelope: max(analytic envelope, |vp|), sliding max over A, moving average over A
     (a smooth attack that completes before the peak arrives), then an exponential release.
     rms_w > 0: the envelope is the energy over the last rms_w samples instead, sqrt(2 * mean(vp^2)) (a sine
-    reads its peak), plus peak_mix of the peak envelope (delayed to line up with the energy's window):
-    (1 - peak_mix) * energy + peak_mix * peak. The window lags by rms_window_advance(rms_w) samples, which
-    the caller takes off."""
+    reads its peak), plus peak_mix of the peak envelope: (1 - peak_mix) * energy + peak_mix * peak. The
+    caller reads it `advance` samples late (rms_window_advance, as far as the look-ahead allows) and the peak
+    envelope is delayed by as much, so it keeps its look-ahead."""
     if rms_w > 0:
         c2 = np.concatenate([[0.0], np.cumsum(np.asarray(vp, float) ** 2)])
         idx = np.arange(1, len(vp) + 1)
         e = np.sqrt(2.0 * np.maximum(c2[idx] - c2[np.maximum(idx - rms_w, 0)], 0.0) / rms_w)
         if peak_mix > 0:
             pk = np.maximum(ds.analytic_envelope(vp), np.abs(vp))
-            h = rms_window_advance(rms_w)
-            pk = np.concatenate([np.zeros(h), pk])[:len(pk)]
+            pk = np.concatenate([np.zeros(advance), pk])[:len(pk)]
             e = (1.0 - peak_mix) * e + peak_mix * pk
     else:
         e = np.maximum(ds.analytic_envelope(vp), np.abs(vp))
@@ -169,8 +168,9 @@ def process(model, x, fs=48000.0, drive_db=0.0, factor=8, max_order=None, auto_g
         if lk:
             vh = vh + lk * (vp - vr)          # the rest of what the shared detector hears
         rw = rms_window(tb, fs)
-        Lk = detector(vh, A, fs, rel, rw, getattr(tb, 'peak_mix', 0.0))
-        sk = shift - min(rms_window_advance(rw), shift)          # an energy window is read centred
+        adv = min(rms_window_advance(rw), shift)                # an energy window is read centred, if it can be
+        Lk = detector(vh, A, fs, rel, rw, getattr(tb, 'peak_mix', 0.0), adv)
+        sk = shift - adv
         jobs.append((tb.branch, np.concatenate([np.full(sk, Lk[0]), Lk])[:len(Lk)]))
     for br, Lsrc in jobs:
         w = branch_weights(br, model, Lsrc)
