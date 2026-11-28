@@ -28,7 +28,8 @@ namespace tt
 class Core
 {
 public:
-    struct Limits { int maxOrder = 1, maxPartitions = 1, maxCount = 1, maxPemp = 256, block = 128, maxTreble = 0; };
+    struct Limits { int maxOrder = 1, maxPartitions = 1, maxCount = 1, maxPemp = 256, block = 128, maxTreble = 0,
+                    maxRmsWindow = 0; };
 
     void allocate (int numChannels, const Limits& lim);
     /** Points the core at a prepared model and an OS factor (1, 2, 4, 8, 16) and resets it. No allocation. */
@@ -111,6 +112,7 @@ private:
     double dUp[5] = {};
     int maxRateIndex = 0;
     int shiftLw = 0;
+    int shiftTreble[ModelData::kMaxTrebleBands] = {};   // shiftLw, less the half-window of an energy detector
     float invRefPeak = 1.0f;
     int numOrders = 1;
 

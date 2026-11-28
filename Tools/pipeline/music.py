@@ -22,6 +22,7 @@ FS = tc.FS
 T_CAL, T_LEVEL, T_PINK = (2.0, 8.0), (11.0, 6.0), (18.0, 8.0)     # start, length (s) in the template
 T_SYNC = (27.0, 92.0)
 T_MUSIC = (30.0, 60.0)
+T_QUIET = (26.2, 0.65)           # silence between the pink noise and the first sync burst: the machine's noise
 LEVEL_TONE_VU = -20.0
 
 
@@ -34,6 +35,7 @@ class MusicPass:
     y: np.ndarray                # the machine's output, lined up, flutter out, at calibration level
     active: tuple                # (start, end) samples of the music that has signal
     pink_check_db: np.ndarray | None = None   # 0 VU pink, this session minus the main capture (0 dB pass only)
+    noise_db: np.ndarray | None = None        # the machine's own noise, 1/3 octaves (build.BB_BANDS), as y
     info: dict = field(default_factory=dict)
     warnings: list = field(default_factory=list)
 
@@ -161,6 +163,16 @@ def analyse_pass(source_path, rec_path, r0, r6, channel=None, log=print, level_o
         vu_from_h3 = float(np.interp(h3, h3c[sel][order], lv[sel][order])) - played_db
     if level_out_db is not None:
         level_in = gain - level_out_db
+        # the level tone sits at -20 VU + level_in: where that is no longer linear (a very hot pass), take
+        # the machine's own 1 kHz compression there (main capture) off
+        import build as B
+        merged, _ = B.merged_measurements(r0, r6, lambda s='': None)
+        lvm = np.array([m_[0] for m_ in merged])
+        k1 = int(np.argmin(np.abs(B.FK - 1000.0)))
+        g1 = np.array([20 * np.log10(np.abs(m_[1][0, k1])) for m_ in merged])
+        for _ in range(3):
+            comp = float(np.interp(LEVEL_TONE_VU + level_in, lvm, g1) - g1[0])
+            level_in = gain - level_out_db - comp
     elif vu_from_h3 is None or abs(vu_from_h3 - gain) <= 3.0:
         level_in = gain
     else:
@@ -181,11 +193,13 @@ def analyse_pass(source_path, rec_path, r0, r6, channel=None, log=print, level_o
         if main:
             pm = B._band_levels(np.asarray(main[0][2], float)[FS:7 * FS] * g0)
             pink_check = B._band_levels(yy[a:b] * 10 ** (-level_out / 20.0)) - pm
+    q0 = int(T_QUIET[0] * FS)
+    noise = B._band_levels(yy[q0:q0 + int(T_QUIET[1] * FS)] * 10 ** (-level_out / 20.0))
     log(f'  {rec_path.rsplit("/", 1)[-1]}: onto the tape {level_in:+.1f} dB, playback {level_out:+.1f} dB '
         f'(tone {gain:+.1f} dB, its 3rd harmonic {h3:.1f} dB), music {(active[1] - active[0]) / FS:.0f} s'
         + (f'; session vs main capture (0 VU pink), 1/3 octaves: mean {np.mean(pink_check):+.2f}, '
            f'worst {pink_check[np.argmax(np.abs(pink_check))]:+.1f} dB' if pink_check is not None else ''))
-    return MusicPass(rec_path, float(level_in), float(level_out), xm, ym, active, pink_check,
+    return MusicPass(rec_path, float(level_in), float(level_out), xm, ym, active, pink_check, noise,
                      {'tone_gain_db': gain, 'cal_h3_db': h3, 'speed_ratio': ratio, 'played_db': played_db},
                      warns)
 
@@ -195,7 +209,28 @@ def bands(y):
     return B._band_levels(y)
 
 
-def compare(model, passes, factor=2, seconds=None, release_ms=None):
+def render_cpp(renderer, model, x, drive_db, factor=8):
+    """The C++ engine (Tests/tt_render) on x at drive_db, no flutter, no auto gain, lined up with x."""
+    import os
+    import subprocess
+    import tempfile
+    from scipy.io import wavfile
+    import ttm
+    with tempfile.TemporaryDirectory() as d:
+        mp, wi, wo = os.path.join(d, 'm.ttm'), os.path.join(d, 'i.wav'), os.path.join(d, 'o.wav')
+        ttm.write(mp, model) if not isinstance(model, str) else None
+        wavfile.write(wi, FS, np.concatenate([x, np.zeros(FS // 2)]).astype(np.float32))
+        subprocess.run([renderer, model if isinstance(model, str) else mp, wi, wo, '--os', str(factor),
+                        '--drive', f'{drive_db}', '--no-flutter', '--no-autogain'], check=True, capture_output=True)
+        y = wavfile.read(wo)[1].astype(float).reshape(len(x) + FS // 2, -1)[:, 0]
+    a, b = ss.sosfiltfilt(ss.butter(4, [300, 3000], 'bandpass', fs=FS, output='sos'), x[:10 * FS]), \
+        ss.sosfiltfilt(ss.butter(4, [300, 3000], 'bandpass', fs=FS, output='sos'), y[:10 * FS])
+    c = ss.correlate(b, a, mode='full', method='fft')
+    lag = int(np.argmax(np.abs(c)) - (len(a) - 1))
+    return y[lag:lag + len(x)] if lag >= 0 else np.concatenate([np.zeros(-lag), y[:len(x) + lag]])
+
+
+def compare(model, passes, factor=2, seconds=None, release_ms=None, renderer=None):
     """A model against the machine on the music of each pass: per 1/3 octave (63 Hz-16 kHz) model minus
     machine, total power and the part that follows the input; the top end (6-13 kHz) and the presence
     (2.5-5 kHz) re the mids (250 Hz-2 kHz), output re input, machine and model; and the loudness
@@ -207,15 +242,18 @@ def compare(model, passes, factor=2, seconds=None, release_ms=None):
     mid = (cent >= 250) & (cent <= 2000)
     top = (cent >= 6000) & (cent <= 13000)
     pres = (cent >= 2500) & (cent <= 5000)
-    lat = re_.latency(model)
+    lat = 0 if renderer else re_.latency(model)
     out = []
     for p in passes:
         a, b = p.active
         if seconds:
             b = min(b, a + int(seconds * FS))
         x = p.x[a:b]
-        ys = re_.process(model, np.concatenate([x, np.zeros(lat + 64)]), FS, drive_db=p.level_in_db, factor=factor,
-                         auto_gain=False, release_ms=release_ms)[lat:lat + len(x)]
+        if renderer:
+            ys = render_cpp(renderer, model, x, p.level_in_db, factor)
+        else:
+            ys = re_.process(model, np.concatenate([x, np.zeros(lat + 64)]), FS, drive_db=p.level_in_db,
+                             factor=factor, auto_gain=False, release_ms=release_ms)[lat:lat + len(x)]
         ym = p.y[a:b]
         xin = x * 10 ** (p.level_in_db / 20.0)
         bx, bm, bs = B._band_levels(xin), B._band_levels(ym), B._band_levels(ys)

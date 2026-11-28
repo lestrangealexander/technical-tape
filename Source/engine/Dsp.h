@@ -129,16 +129,24 @@ private:
 //==============================================================================
 /** The look-ahead peak detector of the pre-emphasised signal:
     max(analytic envelope, |x|) -> sliding max over A -> moving average over A -> exponential release.
-    Same as refengine.detector(). */
+    With an energy window W > 0 the envelope is sqrt(2 * mean(x^2)) over the last W samples instead (a sine
+    reads its peak), mixed with peakMix of the peak envelope delayed by (W - 1) / 2 samples to line up with
+    the window's middle; the caller reads the result (W - 1) / 2 samples late, so that it is centred.
+    Same as refengine.detector(). prepare() allocates only beyond what an earlier prepare() did. */
 class Detector
 {
 public:
-    void prepare (int lookAhead, float releaseCoef)
+    void prepare (int lookAhead, float releaseCoef, int rmsWindow = 0, float peakMix = 0.0f)
     {
         A = std::max (1, lookAhead);
         rel = releaseCoef;
+        W = std::max (0, rmsWindow);
+        mix = W > 0 ? std::clamp (peakMix, 0.0f, 1.0f) : 0.0f;
+        H = W > 0 ? (W - 1) / 2 : 0;
         envRing.assign ((size_t) A, 0.0f);
         maxRing.assign ((size_t) A, 0.0f);
+        sqRing.assign ((size_t) std::max (W, 1), 0.0);
+        pkRing.assign ((size_t) std::max (H, 1), 0.0f);
         reset();
     }
 
@@ -148,20 +156,43 @@ public:
         x1 = 0.0f;
         std::fill (envRing.begin(), envRing.end(), 0.0f);
         std::fill (maxRing.begin(), maxRing.end(), 0.0f);
+        std::fill (sqRing.begin(), sqRing.end(), 0.0);
+        std::fill (pkRing.begin(), pkRing.end(), 0.0f);
         pos = 0;
+        sqPos = 0;
+        pkPos = 0;
         sum = 0.0;
+        sqSum = 0.0;
         prev = 0.0f;
     }
 
     float process (float x) noexcept
     {
-        // Hilbert pair: chain 0 taken one sample later
-        float i = x, q = x;
-        for (int s = 0; s < 4; ++s) i = hs[s].process (i, kA2[0][s]);
-        for (int s = 0; s < 4; ++s) q = hs[4 + s].process (q, kA2[1][s]);
-        const float iDel = x1;
-        x1 = i;
-        const float env = std::max (std::sqrt (iDel * iDel + q * q), std::abs (x));
+        float env;
+        if (W > 0)
+        {
+            const double sq = (double) x * (double) x;      // exact: the running sum adds and takes off the same
+            sqSum += sq - sqRing[sqPos];
+            sqRing[sqPos] = sq;
+            sqPos = sqPos + 1 == (size_t) W ? 0 : sqPos + 1;
+            env = (float) std::sqrt (std::max (0.0, 2.0 * sqSum / (double) W));
+            if (mix > 0.0f)
+            {
+                float pk = peakEnvelope (x);
+                if (H > 0)
+                {
+                    const float d = pkRing[pkPos];
+                    pkRing[pkPos] = pk;
+                    pkPos = pkPos + 1 == (size_t) H ? 0 : pkPos + 1;
+                    pk = d;
+                }
+                env = (1.0f - mix) * env + mix * pk;
+            }
+        }
+        else
+        {
+            env = peakEnvelope (x);
+        }
         envRing[pos] = env;
         float sm = 0.0f;                                   // sliding max over the last A (A <= 80)
         for (float v : envRing) sm = v > sm ? v : sm;
@@ -174,6 +205,17 @@ public:
     }
 
 private:
+    /** max(analytic envelope, |x|): Hilbert pair, chain 0 taken one sample later. */
+    float peakEnvelope (float x) noexcept
+    {
+        float i = x, q = x;
+        for (int s = 0; s < 4; ++s) i = hs[s].process (i, kA2[0][s]);
+        for (int s = 0; s < 4; ++s) q = hs[4 + s].process (q, kA2[1][s]);
+        const float iDel = x1;
+        x1 = i;
+        return std::max (std::sqrt (iDel * iDel + q * q), std::abs (x));
+    }
+
     struct Section
     {
         float x1 = 0, x2 = 0, y1 = 0, y2 = 0;
@@ -191,11 +233,12 @@ private:
 
     Section hs[8];
     float x1 = 0.0f;
-    int A = 1;
-    float rel = 0.0f;
-    std::vector<float> envRing, maxRing;
-    size_t pos = 0;
-    double sum = 0.0;
+    int A = 1, W = 0, H = 0;
+    float rel = 0.0f, mix = 0.0f;
+    std::vector<float> envRing, maxRing, pkRing;
+    std::vector<double> sqRing;
+    size_t pos = 0, sqPos = 0, pkPos = 0;
+    double sum = 0.0, sqSum = 0.0;
     float prev = 0.0f;
 };
 

@@ -148,6 +148,38 @@ def plot_autogain(model):
     return _png(fig)
 
 
+def plot_music(model):
+    """The music fit: model minus machine per 1/3 octave on each music pass (total power, the session's drift
+    out; bands lost in the machine's noise left out)."""
+    mu = (model.meta or {}).get('music')
+    if not mu or not mu.get('band_errors_db'):
+        return None
+    cent = 1000.0 * 2 ** (np.arange(-13, 13) / 3.0)
+    fig, ax = _fig(7.2, 2.8)
+    for k, (lv, e) in enumerate(zip(mu['passes_db'], mu['band_errors_db'])):
+        ev = np.array([np.nan if v is None else v for v in e], float)
+        ax.semilogx(cent, ev, color=SERIES[k % len(SERIES)], lw=1.6, marker='o', ms=2.5, label=f'{lv:+.1f} dB')
+    ax.axhline(0.0, color=MUTED, lw=0.8)
+    ax.set_xlim(50, 20000)
+    ax.set_ylim(-6, 6)
+    ax.set_xlabel('Hz')
+    ax.set_ylabel('model - machine (dB)')
+    ax.legend(loc='lower left', fontsize=8, ncol=3, title='music onto the tape', title_fontsize=8)
+    ax.set_title('Music through the model against the machine, per 1/3 octave', loc='left', fontsize=10, color=INK)
+    return _png(fig)
+
+
+def _music_summary(mu):
+    if not mu:
+        return 'no music passes: the treble stage was fitted on the pink noise'
+    rows = [f'{lv:+.1f} dB: {e:.2f} dB rms, above 1.8 kHz {t:+.2f} dB, top end {tm[0]:+.1f} / {tm[1]:+.1f}, presence '
+            f'{pr[0]:+.1f} / {pr[1]:+.1f} dB (machine / model)'
+            for lv, e, t, tm, pr in zip(mu['passes_db'], mu['error_per_pass_db'], mu['treble_error_per_pass_db'],
+                                        mu['top_machine_model_db'], mu['presence_machine_model_db'])]
+    return html.escape(f'{mu["error_db"]:.2f} dB rms over 1/3 octaves 63 Hz-16 kHz and passes; ') + '<br>' + \
+        '<br>'.join(html.escape(r) for r in rows)
+
+
 def _hot_summary(p):
     if 'hot_in_db' not in p:
         return html.escape(str(p))
@@ -175,18 +207,25 @@ def write_report(path, model, dbg, r0, r6, log_lines=()):
             ('Pre-emphasis fit', esc(str(m.get('preemphasis')))),
             ('Treble stage', ('; '.join((f'{tb.fc_lo / 1000:g}-{tb.fc_hi / 1000:g} kHz' if tb.fc_hi > 0 else
                                          f'from {tb.fc_lo / 1000:g} kHz') for tb in model.treble_bands)
-                              + ': each band saturates on its own level'
+                              + ': each band saturates on its own level, read by '
+                              + (f'its energy over {model.treble_bands[0].rms_ms:g} ms'
+                                 + (f' with {model.treble_bands[0].peak_mix:g} of its peaks mixed in'
+                                    if getattr(model.treble_bands[0], 'peak_mix', 0.0) > 0 else '')
+                                 if getattr(model.treble_bands[0], 'rms_ms', 0.0) > 0 else 'its peaks')
                               + (f', its detector also hearing {model.treble_bands[0].leak:g} of the whole signal'
                                  if getattr(model.treble_bands[0], 'leak', 0.0) > 0 else '')
                               if getattr(model, 'treble_bands', None)
                               else 'none')),
-            ('Broadband fit (pink noise)', esc(str(m.get('broadband')))),
+            ('Music fit', _music_summary(m.get('music'))),
+            ('Pink noise' + (' (a check: the music decided)' if m.get('music') else ' (broadband fit)'),
+             esc(str(m.get('broadband')))),
             ('Above the hottest capture', esc(str(m.get('extrapolation')))),
             ('Wow & flutter (capture)', esc(str(m.get('wow_flutter')))),
             ('Hot pass', _hot_summary(m.get('passes', {})) if r6 is not None else 'none')]
     warn = m.get('warnings', [])
-    imgs = [plot_response(dbg), plot_compression(dbg), plot_harmonics(dbg), plot_preemphasis(model),
+    imgs = [plot_response(dbg), plot_compression(dbg), plot_harmonics(dbg), plot_music(model), plot_preemphasis(model),
             plot_flutter(model), plot_autogain(model)]
+    imgs = [b for b in imgs if b]
     css = """body{font:14px/1.45 -apple-system,Segoe UI,Helvetica,Arial,sans-serif;color:#1f2328;max-width:860px;
 margin:32px auto;padding:0 20px}h1{font-size:22px;margin:0 0 4px}p.sub{color:#6e7781;margin:0 0 20px}
 table{border-collapse:collapse;width:100%;margin:8px 0 20px}td{padding:5px 8px;border-bottom:1px solid #eaeef2;

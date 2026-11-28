@@ -33,10 +33,24 @@ def look_ahead(model, fs):
     return max(1, min(LOOK_AHEAD_MAX, int(round(model.look_ahead_ms * 1e-3 * fs))))
 
 
-def detector(vp, A, fs, release_ms):
+def detector(vp, A, fs, release_ms, rms_w=0, peak_mix=0.0):
     """Look-ahead peak envelope: max(analytic envelope, |vp|), sliding max over A, moving average over A
-    (a smooth attack that completes before the peak arrives), then an exponential release."""
-    e = np.maximum(ds.analytic_envelope(vp), np.abs(vp))
+    (a smooth attack that completes before the peak arrives), then an exponential release.
+    rms_w > 0: the envelope is the energy over the last rms_w samples instead, sqrt(2 * mean(vp^2)) (a sine
+    reads its peak), plus peak_mix of the peak envelope (delayed to line up with the energy's window):
+    (1 - peak_mix) * energy + peak_mix * peak. The window lags by rms_window_advance(rms_w) samples, which
+    the caller takes off."""
+    if rms_w > 0:
+        c2 = np.concatenate([[0.0], np.cumsum(np.asarray(vp, float) ** 2)])
+        idx = np.arange(1, len(vp) + 1)
+        e = np.sqrt(2.0 * np.maximum(c2[idx] - c2[np.maximum(idx - rms_w, 0)], 0.0) / rms_w)
+        if peak_mix > 0:
+            pk = np.maximum(ds.analytic_envelope(vp), np.abs(vp))
+            h = rms_window_advance(rms_w)
+            pk = np.concatenate([np.zeros(h), pk])[:len(pk)]
+            e = (1.0 - peak_mix) * e + peak_mix * pk
+    else:
+        e = np.maximum(ds.analytic_envelope(vp), np.abs(vp))
     pad = np.concatenate([np.zeros(A - 1), e])
     sm = np.lib.stride_tricks.sliding_window_view(pad, A).max(axis=1)
     c = np.concatenate([[0.0], np.cumsum(np.concatenate([np.zeros(A - 1), sm]))])
@@ -49,6 +63,17 @@ def detector(vp, A, fs, release_ms):
         prev = v if v > prev * alpha else prev * alpha
         out[i] = prev
     return np.maximum(out, 1e-6)
+
+
+def rms_window(tb, fs):
+    """A treble band's energy window in samples (0: its detector reads peaks). Same as rmsWindowFor()."""
+    ms = getattr(tb, 'rms_ms', 0.0)
+    return max(1, int(math.floor(ms * 1e-3 * fs + 0.5))) if ms > 0 else 0
+
+
+def rms_window_advance(w):
+    """Samples by which an energy window of w samples is read early, so that it is centred on the signal."""
+    return (w - 1) // 2 if w > 0 else 0
 
 
 def catmull(W, idx):
@@ -143,8 +168,10 @@ def process(model, x, fs=48000.0, drive_db=0.0, factor=8, max_order=None, auto_g
         lk = getattr(tb, 'leak', 0.0)
         if lk:
             vh = vh + lk * (vp - vr)          # the rest of what the shared detector hears
-        Lk = detector(vh, A, fs, rel)
-        jobs.append((tb.branch, np.concatenate([np.full(shift, Lk[0]), Lk])[:len(Lk)]))
+        rw = rms_window(tb, fs)
+        Lk = detector(vh, A, fs, rel, rw, getattr(tb, 'peak_mix', 0.0))
+        sk = shift - min(rms_window_advance(rw), shift)          # an energy window is read centred
+        jobs.append((tb.branch, np.concatenate([np.full(sk, Lk[0]), Lk])[:len(Lk)]))
     for br, Lsrc in jobs:
         w = branch_weights(br, model, Lsrc)
         for r in range(br.kernels.shape[0]):

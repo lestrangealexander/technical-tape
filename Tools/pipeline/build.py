@@ -731,7 +731,7 @@ def flutter_model(results):
     return np.array(peaks).reshape(-1, 2), np.stack([grid, cont_g], axis=1), max_delay, wf
 
 
-def auto_gain_table(model, log):
+def auto_gain_table(model, log, renderer=None):
     """Auto gain: at each INPUT, the gain that keeps the output as loud (K-weighted) as at INPUT 0, on a
     music-like loop (ds.program_loop). 0 dB at INPUT 0, so AG on or off sounds the same there. Up to 0.9.3
     it was made on pink noise and matched the dry signal: pink noise has far more treble than music, and at
@@ -739,8 +739,16 @@ def auto_gain_table(model, log):
     +7.8 dB from -12 to +18 dB) and AG changed the level at INPUT 0 (3.75 ips: +2 to +3.5 dB)."""
     x = ds.program_loop(6.0, FS)
     drives = np.arange(-18.0, 18.01, 1.5)
-    loud = np.array([ds.k_loudness_db(re_.process(model, x, FS, drive_db=float(d), factor=4)[FS // 2:])
-                     for d in drives])
+    if renderer:
+        import os
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            mp = os.path.join(d, 'm.ttm')
+            ttm.write(mp, model)
+            ys = render_cpp(renderer, mp, [(x, float(dr)) for dr in drives], 4)
+    else:
+        ys = [re_.process(model, x, FS, drive_db=float(dr), factor=4) for dr in drives]
+    loud = np.array([ds.k_loudness_db(y[FS // 2:]) for y in ys])
     return float(drives[0]), 1.5, loud[int(np.argmin(np.abs(drives)))] - loud
 
 
@@ -829,15 +837,28 @@ def pick_release(errors):
     return min(r for r, e in errors.items() if e <= best + tol)
 
 
-def broadband_error(model, sections, release_ms, window=BB_WINDOW, detail=False):
+def broadband_error(model, sections, release_ms, window=BB_WINDOW, detail=False, renderer=None):
     """rms (dB) over bands and sections of model minus capture, coherent levels (what the fit matches), and
-    the mean error per section; with detail, also the per-band errors and the total-power rms."""
+    the mean error per section; with detail, also the per-band errors and the total-power rms. renderer: the
+    C++ engine (tt_render) instead of the reference engine (the same output, faster)."""
     a, b = int(window[0] * FS), int(window[1] * FS)
     lat = re_.latency(model)
+    if renderer:
+        import os
+        import tempfile
+        m2 = copy.copy(model)
+        m2.release_ms = float(release_ms)
+        with tempfile.TemporaryDirectory() as d:
+            mp = os.path.join(d, 'm.ttm')
+            ttm.write(mp, m2)
+            ys = render_cpp(renderer, mp, [(xin[:b + 4096], drive) for lv, xin, drive, ref, ref_t in sections], 2)
     errs, errs_t = [], []
-    for lv, xin, drive, ref, ref_t in sections:
-        y = re_.process(model, xin[:b + lat + 4096], FS, drive_db=drive, factor=2, auto_gain=False,
-                        release_ms=release_ms)[a + lat:b + lat]
+    for k, (lv, xin, drive, ref, ref_t) in enumerate(sections):
+        if renderer:
+            y = ys[k][a:b]
+        else:
+            y = re_.process(model, xin[:b + lat + 4096], FS, drive_db=drive, factor=2, auto_gain=False,
+                            release_ms=release_ms)[a + lat:b + lat]
         errs.append(coherent_levels(xin[a:b], y) - ref)
         if detail:
             errs_t.append(_band_levels(y) - ref_t)
@@ -845,8 +866,251 @@ def broadband_error(model, sections, release_ms, window=BB_WINDOW, detail=False)
     res = (float(np.sqrt(np.mean(e ** 2))), [float(np.mean(x)) for x in e])
     if detail:
         et = np.array(errs_t)
-        return res + (e, float(np.sqrt(np.mean(et ** 2))), [float(np.mean(x)) for x in et])
+        return res + (e, float(np.sqrt(np.mean(et ** 2))), [float(np.mean(x)) for x in et], et)
     return res
+
+
+# ------------------------------------------------------------------ 7b. the music fit
+# A mix through the machine at three levels (music.py) settles what tones and pink noise can't: how the highs
+# of real music saturate as the level goes up. Every choice below reproduces single tones exactly; pink noise
+# has far more treble than any mix, so a fit to it saturates a mix's highs at the wrong levels (0.9.3: at 3.75
+# ips the top end of a mix fell away far faster than on the machine). Where a model has music passes, they
+# decide the treble stage and the detectors; its pink noise is reported, not fitted.
+MUSIC_EXCERPTS = (0.08, 0.46, 0.84)     # excerpts scored while searching: where they start, as fractions of a pass
+MUSIC_EXCERPT_S = 8.0
+MUSIC_GAP_S = 0.4                       # silence between excerpts, so that the detectors let go
+MUSIC_SNR_DB = 6.0                      # a band counts where the music stands this far above the machine's noise
+MUSIC_DARK = ((5.0, 2.0), (10.0, 1.5))  # (up to ips, weight): above 2 kHz, where the model is brighter than the
+                                        # machine, its squared error counts this much more: at the slow speeds,
+                                        # rather a shade dark than a shade bright
+MUSIC_ALPHAS = (0.25, 0.5, 0.75)        # shares of P(f) as shared pre-emphasis tried first, then +-0.125
+MUSIC_DETECTORS = ((0.0, 0.0), (5.0, 0.0), (5.0, 0.25), (5.0, 0.5))   # treble detectors tried first: peaks, or
+                                        # the energy over 5 ms with 0, 1/4 or 1/2 of the peaks mixed in
+MUSIC_WINDOWS_NEAR = {1.0: (2.0,), 2.0: (1.0, 5.0), 5.0: (2.0, 10.0), 10.0: (5.0, 20.0), 20.0: (10.0,)}
+MUSIC_PINK_WEIGHT = 0.3                 # the capture's pink noise (to +13 VU) counts this much against the music
+MUSIC_PINK_TOP_VU = 13.0
+MUSIC_LEAKS = (0.1, 0.2, 0.35)
+MUSIC_RELEASES = (20.0, 40.0, 60.0, 100.0)
+MUSIC_SEARCH_RELEASE = 40.0
+MUSIC_OS = 4                            # oversampling while fitting (the hot passes' harmonics must not alias)
+
+
+def _dark_weight(speed):
+    return next((w for top, w in MUSIC_DARK if float(speed) <= top), 1.0)
+
+
+def music_drift(passes):
+    """How the machine sat on the day of the music against the main capture, per 1/3 octave (BB_BANDS), dB:
+    the 0 dB pass's 0 VU pink against the main capture's, less how much lower or higher that pass went onto
+    the tape (its level tone), smoothed across three bands. Zero without a pink check."""
+    p = next((p for p in passes if p.pink_check_db is not None), None)
+    if p is None:
+        return np.zeros(len(BB_BANDS))
+    d = np.asarray(p.pink_check_db, float) - p.level_in_db
+    return np.convolve(np.pad(d, 1, mode='edge'), np.ones(3) / 3, 'valid')
+
+
+def music_targets(passes, excerpts=MUSIC_EXCERPTS, length_s=MUSIC_EXCERPT_S):
+    """The machine on each music pass, ready to score a model against: the input (excerpts, with silence
+    between them), the drive, and the machine's 1/3-octave power over the excerpts with its own noise taken
+    off. The session's drift (its 0 VU pink against the main capture's, smoothed across bands) is taken out
+    of every pass: the model stands on the main capture, and the fit mustn't chase how the machine sat on
+    the day of the music. excerpts=None: all of each pass's music, in one piece."""
+    nb = len(BB_BANDS)
+    drift = music_drift(passes)
+    gap = np.zeros(int(MUSIC_GAP_S * FS))
+    out = []
+    for p in passes:
+        a, b = p.active
+        n = int(length_s * FS)
+        spans = [(a, b)] if excerpts is None or b - a <= n else \
+            [(a + int(f * (b - a - n)), a + int(f * (b - a - n)) + n) for f in excerpts]
+        g = 10 ** (p.level_in_db / 20.0)
+        xs, cuts, pm, px = [gap], [], [], []
+        pos = len(gap)
+        for s_, e_ in spans:
+            xs += [p.x[s_:e_], gap]
+            cuts.append((pos, pos + e_ - s_))
+            pos += e_ - s_ + len(gap)
+            pm.append(10 ** (_band_levels(p.y[s_:e_]) / 10))
+            px.append(10 ** (_band_levels(g * p.x[s_:e_]) / 10))
+        pm, px = np.mean(pm, axis=0), np.mean(px, axis=0)
+        pn = 10 ** (np.asarray(p.noise_db, float) / 10) if getattr(p, 'noise_db', None) is not None else np.zeros(nb)
+        ok = pm >= pn * 10 ** (MUSIC_SNR_DB / 10)
+        out.append(dict(level=float(p.level_in_db), x=np.concatenate(xs), cuts=cuts, ok=ok, bx=10 * np.log10(px + 1e-30),
+                        Bm=10 * np.log10(np.maximum(pm - pn, 0.25 * pm) + 1e-30) - drift))
+    return out
+
+
+def render_cpp(renderer, model_path, jobs, factor):
+    """The C++ engine (Tests/tt_render) on each (x, drive dB): no flutter, no auto gain, lined up with x by
+    the latency it reports. Two at a time."""
+    import os
+    import subprocess
+    import tempfile
+    from scipy.io import wavfile
+    outs = [None] * len(jobs)
+    with tempfile.TemporaryDirectory() as d:
+        def start(i):
+            x, drive = jobs[i]
+            wi, wo = os.path.join(d, f'i{i}.wav'), os.path.join(d, f'o{i}.wav')
+            wavfile.write(wi, FS, np.concatenate([x, np.zeros(FS // 2)]).astype(np.float32))
+            return i, wo, subprocess.Popen([renderer, model_path, wi, wo, '--os', str(factor), '--drive', f'{drive:.4f}',
+                                            '--no-flutter', '--no-autogain'], stdout=subprocess.PIPE,
+                                           stderr=subprocess.PIPE, text=True)
+
+        def finish(job):
+            i, wo, pr = job
+            so, se = pr.communicate()
+            if pr.returncode != 0:
+                raise RuntimeError(f'tt_render failed: {se.strip()}')
+            lat = int(next(ln.split()[1] for ln in so.splitlines() if ln.startswith('latency')))
+            y = wavfile.read(wo)[1].astype(float).reshape(-1)
+            outs[i] = y[lat:lat + len(jobs[i][0])]
+        running = []
+        for i in range(len(jobs)):
+            running.append(start(i))
+            if len(running) == 2:
+                finish(running.pop(0))
+        for job in running:
+            finish(job)
+    return outs
+
+
+def music_error(model, targets, speed, renderer, factor=MUSIC_OS, detail=False, sums=False, pink=None):
+    """rms (dB) over 1/3 octaves (63 Hz-16 kHz) and passes of model minus machine, total power, the bands
+    lost in the machine's noise left out, errors above 2 kHz where the model is brighter weighted by
+    _dark_weight(speed); with detail, per pass: (drive, rms, mean above 1.8 kHz, top end 6-13 kHz and
+    presence 2.5-5 kHz re the mids 250 Hz-2 kHz, machine and model, per-band errors). sums: the weighted
+    sum of squares and of weights instead. pink: also render these pink-noise sections (broadband_sections)
+    and return their outputs."""
+    import os
+    import tempfile
+    cent = np.array(BB_BANDS)
+    hi2, hi18 = cent >= 2000.0, cent >= 1800.0
+    mid, top, pres = (cent >= 250) & (cent <= 2000), (cent >= 6000) & (cent <= 13000), (cent >= 2500) & (cent <= 5000)
+    dark = _dark_weight(speed)
+    jobs = [(t['x'], t['level']) for t in targets]
+    if pink:
+        b_ = int(BB_SEARCH_WINDOW[1] * FS)
+        jobs += [(xin[:b_ + 4096], drive) for lv, xin, drive, ref, ref_t in pink]
+    with tempfile.TemporaryDirectory() as d:
+        mp = os.path.join(d, 'm.ttm')
+        ttm.write(mp, model)
+        ys = render_cpp(renderer, mp, jobs, factor)
+    ys, yp = ys[:len(targets)], ys[len(targets):]
+    num = den = 0.0
+    rows = []
+    for t, y in zip(targets, ys):
+        bs = 10 * np.log10(np.mean([10 ** (_band_levels(y[a:b]) / 10) for a, b in t['cuts']], axis=0) + 1e-30)
+        e = bs - t['Bm']
+        w = np.where(hi2 & (e > 0), dark, 1.0) * t['ok']
+        num += float(np.sum(w * e ** 2))
+        den += float(np.sum(w))
+        if detail:
+            bal = lambda v, sel: float(np.mean(v[sel] - t['bx'][sel]) - np.mean(v[mid] - t['bx'][mid]))   # noqa: E731
+            ok = t['ok']
+            rows.append((t['level'], float(np.sqrt(np.mean(e[ok] ** 2))), float(np.mean(e[hi18 & ok])),
+                         (bal(t['Bm'], top & ok), bal(bs, top & ok)), (bal(t['Bm'], pres & ok), bal(bs, pres & ok)),
+                         np.where(ok, e, np.nan)))
+    if sums:
+        return num, den, yp
+    err = float(np.sqrt(num / max(den, 1e-9)))
+    return (err, rows) if detail else err
+
+
+def pink_window_sums(pink, ys, speed):
+    """How far the model's pink noise falls outside the machine's, per 1/3 octave and section: above the
+    machine's total power (too bright: errors above 2 kHz weighted by _dark_weight), or below the part of
+    the machine's output that follows the input (too dull). In between it is as close as the model can
+    get: on tape a growing share of dense highs stops following the input (distortion products, the tape's
+    own modulation), which the model can't make. Weighted sum of squares and of weights."""
+    a, b = int(BB_SEARCH_WINDOW[0] * FS), int(BB_SEARCH_WINDOW[1] * FS)
+    hi2 = np.array(BB_BANDS) >= 2000.0
+    dark = _dark_weight(speed)
+    num = den = 0.0
+    for (lv, xin, drive, ref, ref_t), y in zip(pink, ys):
+        tot = _band_levels(y[a:b]) - ref_t
+        coh = coherent_levels(xin[a:b], y[a:b]) - ref
+        e = np.where(tot > 0, tot, np.minimum(coh, 0.0))
+        w = np.where(hi2 & (e > 0), dark, 1.0)
+        num += float(np.sum(w * e ** 2))
+        den += float(np.sum(w))
+    return num, den
+
+
+def music_fit(assemble, retreble_, pdb_iso, layouts, targets, speed, renderer, log, pink=None):
+    """The treble stage, the shared pre-emphasis and the detectors, chosen where the model's music matches
+    the machine's (music_error), with the capture's pink noise (pink_window_sums) counting
+    MUSIC_PINK_WEIGHT as much: every layout at three shares of P(f) with four treble detectors, then the
+    detector's neighbours (peak share +-1/8, the window shorter and longer), the share of P +-1/8, the
+    leak and the release, each in turn. Returns the best key (layout, share, (window, peak share), leak,
+    release), model, parts and what was tried."""
+    import dataclasses
+    tried = {}
+    best = None
+
+    def describe(key):
+        lay, al, (win, pk), lk, rel = key
+        det = (f'energy {win:g} ms' + (f' + {pk:g} peak' if pk else '')) if win else 'peaks'
+        return (', '.join((f'{lo / 1000:g}-{hi / 1000:g}' if hi > 0 else f'{lo / 1000:g}+') for lo, hi in lay)
+                + f' kHz, share {al:g}, {det}, leak {lk:g}, release {rel:g} ms')
+
+    def variant(m_, det, rel):
+        m2 = copy.copy(m_)
+        m2.treble_bands = [dataclasses.replace(tb, rms_ms=float(det[0]), peak_mix=float(det[1]) if det[0] else 0.0)
+                           for tb in m_.treble_bands]
+        m2.release_ms = float(rel)
+        return m2
+
+    def score(key, m_, p_):
+        nonlocal best
+        if key in tried:
+            return
+        lay, al, det, lk, rel = key
+        mv = variant(m_, det, rel)
+        num, den, yp = music_error(mv, targets, speed, renderer, sums=True, pink=pink)
+        em = math.sqrt(num / max(den, 1e-9))
+        if pink:
+            pn, pd = pink_window_sums(pink, yp, speed)
+            ep = math.sqrt(pn / max(pd, 1e-9))
+            # each part as an rms of its own, then mixed: the pink sections don't outweigh the music by number
+            tried[key] = math.sqrt((em ** 2 + MUSIC_PINK_WEIGHT * ep ** 2) / (1.0 + MUSIC_PINK_WEIGHT))
+            log(f'    {describe(key)}: {tried[key]:.3f} dB (music {em:.3f}, pink noise outside the machine\'s {ep:.3f})')
+        else:
+            tried[key] = em
+            log(f'    {describe(key)}: {tried[key]:.3f} dB')
+        if best is None or tried[key] < tried[best[0]]:
+            best = (key, mv, p_, m_)
+
+    rel0 = MUSIC_SEARCH_RELEASE
+    for lay in layouts:
+        for al in MUSIC_ALPHAS:
+            m_, p_ = assemble(pdb_iso * al, lay, 0.0)
+            for det in (MUSIC_DETECTORS if lay else ((0.0, 0.0),)):
+                score((lay, al, det, 0.0, rel0), m_, p_)
+    (lay, al, det, lk, rel), _, p_, m_ = best
+    if det[0] > 0:
+        for pk in (det[1] - 0.125, det[1] + 0.125):
+            if 0.0 <= pk <= 1.0:
+                score((lay, al, (det[0], pk), 0.0, rel0), m_, p_)
+        det = best[0][2]
+        for w2 in MUSIC_WINDOWS_NEAR.get(det[0], ()):
+            score((lay, al, (w2, det[1]), 0.0, rel0), m_, p_)
+    det = best[0][2]
+    for al2 in (al - 0.125, al + 0.125):
+        if 0.0 <= al2 <= 1.0:
+            m2, p2 = assemble(pdb_iso * al2, lay, 0.0)
+            score((lay, al2, det, 0.0, rel0), m2, p2)
+    (lay, al, det, lk, rel), _, p_, m_ = best
+    if lay:
+        for lk2 in MUSIC_LEAKS:
+            score((lay, al, det, lk2, rel0), retreble_(m_, p_, pdb_iso * al, lay, lk2), p_)
+    (lay, al, det, lk, rel), _, p_, m_ = best
+    for rel2 in MUSIC_RELEASES:
+        score((lay, al, det, lk, rel2), m_, p_)
+    key, mv, p_, m_ = best
+    return key, mv, p_, {describe(k): round(v, 3) for k, v in tried.items()}
 
 
 # ------------------------------------------------------------------ all of it
@@ -908,7 +1172,9 @@ def assemble_model(levels, Hg, K, pf, pdb, layout=(), leak=0.0):
                        modes=modes, errs=errs, Khf=Khf, trunc_hf=trunc_hf)
 
 
-def build(tape, speed, r0, r6, out_path, log=print, extra_meta=None, broadband=True):
+def build(tape, speed, r0, r6, out_path, log=print, extra_meta=None, broadband=True, music=None, renderer=None):
+    """music: the tape and speed's music passes (music.analyse_pass), which then decide the treble stage and
+    the detectors (section 7b); renderer: the C++ engine (Tests/tt_render), needed with music."""
     merged, info = merged_measurements(r0, r6, log)
     levels = np.array([m[0] for m in merged])
     H = np.stack([m[1] for m in merged])
@@ -942,6 +1208,63 @@ def build(tape, speed, r0, r6, out_path, log=print, extra_meta=None, broadband=T
     alpha, layout, leak = 1.0, (), 0.0
     bbinfo = {'release_ms': 60.0}
     sections = broadband_sections(r0, r6, info) if broadband else []
+    musicinfo = None
+    if music:
+        assert renderer, 'the music fit runs the C++ engine'
+        targets = music_targets(music)
+        log(f'  music fit: {len(music)} passes at {", ".join(f"{p_.level_in_db:+.1f}" for p_ in music)} dB, '
+            f'{len(MUSIC_EXCERPTS)} x {MUSIC_EXCERPT_S:g} s of each; bands above the machine\'s noise: '
+            + ', '.join(str(int(t['ok'].sum())) for t in targets) + f' of {len(BB_BANDS)}')
+        pink = [s_ for s_ in broadband_sections(r0, r6, info, BB_SEARCH_WINDOW) if s_[0] <= MUSIC_PINK_TOP_VU] \
+            if broadband else None
+        key, model, parts, tried_m = music_fit(
+            assemble, lambda m_, p_, pdb_, lay_, lk_: retreble(m_, p_, pf, pdb_, lay_, lk_), pdb_iso,
+            treble_layouts(speed) if TREBLE else ((),), targets, speed, renderer, log, pink)
+        layout, alpha, (det, peak_mix), leak, rel = key
+        if leak > 0:                    # all of it built with that leak (the search rebuilt only the treble bands)
+            import dataclasses
+            model, parts = assemble(pdb_iso * alpha, layout, leak)
+            model.treble_bands = [dataclasses.replace(tb, rms_ms=float(det), peak_mix=float(peak_mix))
+                                  for tb in model.treble_bands]
+            model.release_ms = float(rel)
+        full = music_targets(music, excerpts=None)
+        err_m, rows = music_error(model, full, speed, renderer, detail=True)
+        musicinfo = {'error_db': round(err_m, 3), 'treble_detector_ms': det, 'treble_peak_mix': peak_mix,
+                     'pink_weight': MUSIC_PINK_WEIGHT if pink else 0.0, 'tried': tried_m,
+                     'passes_db': [round(r_[0], 2) for r_ in rows],
+                     'error_per_pass_db': [round(r_[1], 3) for r_ in rows],
+                     'treble_error_per_pass_db': [round(r_[2], 3) for r_ in rows],
+                     'top_machine_model_db': [[round(v, 2) for v in r_[3]] for r_ in rows],
+                     'presence_machine_model_db': [[round(v, 2) for v in r_[4]] for r_ in rows],
+                     'band_errors_db': [[None if not np.isfinite(v) else round(float(v), 2) for v in r_[5]] for r_ in rows],
+                     'drift_db': [round(float(v), 2) for v in music_drift(music)],
+                     'dark_weight': _dark_weight(speed)}
+        log(f'  using {describe(layout, leak)}, '
+            + (f'energy over {det:g} ms' + (f' with {peak_mix:g} of the peaks' if peak_mix else '') if det else 'peak')
+            + f' treble detectors, {alpha:g} of P as shared pre-emphasis, release {rel:g} ms; all of the music: '
+            f'{err_m:.2f} dB rms; per pass '
+            + '; '.join(f'{r_[0]:+.1f} dB: {r_[1]:.2f} rms, above 1.8 kHz {r_[2]:+.2f}, top {r_[3][0]:+.1f}/{r_[3][1]:+.1f}, '
+                        f'presence {r_[4][0]:+.1f}/{r_[4][1]:+.1f} (machine/model)' for r_ in rows))
+        bbinfo = {'release_ms': rel, 'alpha': alpha, 'leak': leak, 'fit': 'music',
+                  'treble_bands_hz': [list(b_) for b_ in layout]}
+        if sections:
+            err, per, ebands, err_t, per_t, et = broadband_error(model, sections, rel, detail=True, renderer=renderer)
+            hi_b = np.array(BB_BANDS) >= 1800.0
+            win = np.where(et > 0, et, np.minimum(ebands, 0.0))
+            sel = np.array([s_[0] <= MUSIC_PINK_TOP_VU for s_ in sections])
+            bbinfo.update({'error_db': round(err, 3), 'sections_vu': [round(s_[0], 1) for s_ in sections],
+                           'outside_machine_db': round(float(np.sqrt(np.mean(win[sel] ** 2))), 3) if sel.any() else None,
+                           'treble_total_error_per_section_db': [round(float(np.mean(r_[hi_b])), 3) for r_ in et],
+                           'mean_error_per_section_db': [round(v, 3) for v in per],
+                           'treble_error_per_section_db': [round(float(np.mean(r_[hi_b])), 3) for r_ in ebands],
+                           'error_total_power_db': round(err_t, 3),
+                           'mean_total_power_error_per_section_db': [round(v, 3) for v in per_t]})
+            log(f'  pink noise at {bbinfo["sections_vu"]} VU: outside the machine\'s (above its total power or below the '
+                f'part that follows the input) {bbinfo["outside_machine_db"]} dB rms to +{MUSIC_PINK_TOP_VU:g} VU; the part '
+                f'that follows the input {err:.2f} dB rms, above 1.8 kHz '
+                f'{", ".join(f"{v:+.2f}" for v in bbinfo["treble_error_per_section_db"])} dB; total power {err_t:.2f} dB '
+                f'rms, above 1.8 kHz {", ".join(f"{v:+.2f}" for v in bbinfo["treble_total_error_per_section_db"])} dB')
+        sections = []
     if sections:
         quick = broadband_sections(r0, r6, info, BB_SEARCH_WINDOW)
         tried, best_m = {}, None
@@ -986,7 +1309,7 @@ def build(tape, speed, r0, r6, out_path, log=print, extra_meta=None, broadband=T
                f'lose {max(parts["trunc_hf"]):.1f} dB to their windows' if layout else ''))
         quick_rel = {rel: broadband_error(model, quick, rel, BB_SEARCH_WINDOW) for rel in BB_RELEASES}
         best = pick_release({r: v[0] for r, v in quick_rel.items()})
-        err, per, ebands, err_t, per_t = broadband_error(model, sections, best, detail=True)
+        err, per, ebands, err_t, per_t, _ = broadband_error(model, sections, best, detail=True)
         hi_b = np.array(BB_BANDS) >= 1800.0
         bbinfo = {'release_ms': best, 'error_db': round(err, 3), 'alpha': alpha, 'leak': leak,
                   'treble_bands_hz': [list(b_) for b_ in layout],
@@ -1002,7 +1325,7 @@ def build(tape, speed, r0, r6, out_path, log=print, extra_meta=None, broadband=T
             f'release {best:.0f} ms; mean per section {", ".join(f"{v:+.2f}" for v in per)} dB, above 1.8 kHz '
             f'{", ".join(f"{v:+.2f}" for v in bbinfo["treble_error_per_section_db"])} dB; total power '
             f'{err_t:.2f} dB rms, mean per section {", ".join(f"{v:+.2f}" for v in per_t)} dB')
-    else:
+    elif not music:
         model, parts = assemble(pdb_iso)
     pdb = pdb_iso * alpha
     pinfo['treble_bands_hz'] = [list(b_) for b_ in layout]
@@ -1021,7 +1344,7 @@ def build(tape, speed, r0, r6, out_path, log=print, extra_meta=None, broadband=T
     meta = {'tape': tape, 'speed_ips': speed, 'built': datetime.datetime.now().isoformat(timespec='seconds'),
             'sources': [r.path for r in (r0, r6) if r is not None], 'levels_vu': levels.tolist(), 'orders': K,
             'branch_modes': modes, 'basis_residual_db': errs, 'truncation_db': trunc, 'preemphasis': pinfo,
-            'margin': MARGIN, 'extrapolation': xinfo, 'broadband': bbinfo,
+            'margin': MARGIN, 'extrapolation': xinfo, 'broadband': bbinfo, 'music': musicinfo,
             'wow_flutter': wf, 'passes': info,
             'calibration': {'cal_dbfs': r0.cal_dbfs, 'cal_hz': r0.cal_freq, 'cal_thd_db': r0.cal_thd_db,
                             'noise_floor_dbfs': r0.noise_floor_dbfs},
@@ -1029,7 +1352,7 @@ def build(tape, speed, r0, r6, out_path, log=print, extra_meta=None, broadband=T
     meta.update(extra_meta or {})
     model.flutter_peaks, model.flutter_cont, model.flutter_max_delay = peaks, cont, maxd
     model.meta = meta
-    d0, st, g = auto_gain_table(model, log)
+    d0, st, g = auto_gain_table(model, log, renderer)
     model.ag_drive0, model.ag_step, model.ag_gain_db = d0, st, g.astype(np.float32)
     log(f'  auto gain: {g[0]:+.1f} dB at -18, {g[12]:+.2f} dB at 0, {g[-1]:+.1f} dB at +18 drive')
     ttm.write(out_path, model)

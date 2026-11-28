@@ -42,11 +42,14 @@ struct ModelData
     // by its own detector, which hears the signal through a high-pass at fcLo (and a low-pass at fcHi
     // when another band sits above it), lowest first
     static constexpr int kMaxTrebleBands = 4;
+    static constexpr float kMaxRmsMs = 20.0f;   // longest energy window a treble detector may use
     struct TrebleBand
     {
         float fcLo = 0.0f, fcHi = 0.0f;
         Branch branch;
         float leak = 0.0f;               // how much of the shared detector's pre-emphasised signal it also hears
+        float rmsMs = 0.0f;              // > 0: its detector reads the band's energy over this window, not its peaks,
+        float peakMix = 0.0f;            // ...mixed with this much (0..1) of its peak envelope
     };
     std::vector<TrebleBand> treble;
     bool hasTreble() const noexcept { return ! treble.empty(); }
@@ -110,6 +113,8 @@ struct PreparedModel
         double lpB[3] = { 1.0, 0.0, 0.0 }, lpA[3] = { 1.0, 0.0, 0.0 };
         bool lowPass = false;
         float leak = 0.0f;
+        int rmsWindow = 0;               // samples at this rate (0: peak detector)
+        float peakMix = 0.0f;
     };
     std::vector<TrebleBand> treble;
 
@@ -118,5 +123,7 @@ struct PreparedModel
 
 /** Convolution block size the engine uses at a sample rate. */
 int blockSizeFor (double fs) noexcept;
+/** A treble detector's energy window in samples at fs (0: it reads peaks). Same as refengine.rms_window(). */
+int rmsWindowFor (float rmsMs, double fs) noexcept;
 
 } // namespace tt

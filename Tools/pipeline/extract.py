@@ -3,6 +3,7 @@
 
   python3 Tools/pipeline/extract.py <captures folder or files...> [-o Resources/Models] [--jobs N]
                                     [--channel L|R] [--dry-run] [--only ATR_15]
+                                    [--music <folder or files...> --bounce <mix.wav> [--renderer tt_render]]
 
 Every capture is the Technical Tape test file (Tools/capture/make_capture.py, 333 s) recorded off the
 repro head. A tape at a speed needs a normal pass and, ideally, a +6 dB pass (see docs/CAPTURES.md).
@@ -10,6 +11,11 @@ File names are read loosely: the tape (ATR, Maxell, or any word you use consiste
 (15, 7.5 / 7,5 / 7½ / 7_5, 3.75 / 3¾ / 3_75, optionally followed by "ips") and the pass ("+6", "6dB",
 "hot" or "plus6" for the hot pass; anything else is the normal pass). Examples:
   ATR_15ips_0dB.wav   Maxell 7.5 +6dB.wav   atr-3.75-hot.wav   MAXELL_7½ips_normal.wav
+
+Music captures (Tools/capture/make_music_capture.py, a mix through the machine at a few levels, the return
+untouched) decide the treble stage where a tape and speed has them: --music takes those recordings (named
+like the captures, e.g. MUSIC_ATR_3.75ips_-10dB.wav), --bounce the template that was played, and the fit
+runs the C++ engine (tt_render, built with the plugin; found in build*/ when not given).
 """
 from __future__ import annotations
 
@@ -89,10 +95,23 @@ def default_jobs():
     return max(1, min((os.cpu_count() or 2) // 2, int(mem_gb // 5)))
 
 
-def run_one(tape, speed, passes, out_dir, channel, simulated=False):
-    """Analyse both passes and build the model (runs in a worker process). Returns a summary dict."""
+def find_renderer():
+    root = os.path.normpath(os.path.join(HERE, '..', '..'))
+    for d in sorted(os.listdir(root)):
+        for name in ('tt_render', 'tt_render.exe', os.path.join('Release', 'tt_render.exe')):
+            p = os.path.join(root, d, name)
+            if d.startswith('build') and os.path.isfile(p):
+                return p
+    return None
+
+
+def run_one(tape, speed, passes, out_dir, channel, simulated=False, music_files=(), bounce=None, renderer=None,
+            music_return_db=0.0):
+    """Analyse both passes (and the music passes) and build the model (runs in a worker process). Returns a
+    summary dict."""
     import analyse
     import build
+    import music as mus
     import report
     lines = []
 
@@ -108,9 +127,16 @@ def run_one(tape, speed, passes, out_dir, channel, simulated=False):
         if r6 is None:
             log('  no +6 dB pass: the model stops at the top of the normal pass (+12 VU), and is continued above by '
                 'the fitted saturation curve')
+        mp = [mus.analyse_pass(bounce, f, r0, r6, channel, log=log, level_out_db=music_return_db)
+              for f in music_files] if music_files else None
+        if mp:
+            mp.sort(key=lambda p_: p_.level_in_db)
+            for p_ in mp:
+                for w in p_.warnings:
+                    log(f'  {os.path.basename(p_.path)}: {w}')
         out = os.path.join(out_dir, f'{stem}.ttm')
         model, dbg = build.build(tape, speed, r0, r6, out, log=log,
-                                 extra_meta={'simulated': True} if simulated else None)
+                                 extra_meta={'simulated': True} if simulated else None, music=mp, renderer=renderer)
         rep = os.path.join(out_dir, f'{stem}_report.html')
         try:
             report.write_report(rep, model, dbg, r0, r6, lines)
@@ -133,10 +159,39 @@ def main():
     ap.add_argument('--channel', choices=['L', 'R'], help='use this channel of stereo files (default: the louder)')
     ap.add_argument('--only', help='build just these, e.g. ATR_15,Maxell_7.5')
     ap.add_argument('--dry-run', action='store_true', help='show how the files were read, build nothing')
+    ap.add_argument('--music', nargs='+', default=[], help='music capture WAVs or folders of them')
+    ap.add_argument('--bounce', help='the music capture template that was played (with --music)')
+    ap.add_argument('--music-return', type=float, default=0.0,
+                    help='dB the playback was turned for the music passes (default 0: untouched)')
+    ap.add_argument('--renderer', help='the C++ engine, tt_render (with --music; default: build*/tt_render)')
     ap.add_argument('--simulated', action='store_true', help=argparse.SUPPRESS)   # captures of Tools/sim's virtual machine
     a = ap.parse_args()
 
     groups, skipped = collect(a.inputs)
+    music = {}
+    if a.music:
+        if not a.bounce:
+            print('--music needs --bounce: the template that was played')
+            return 1
+        a.renderer = a.renderer or find_renderer()
+        if not a.renderer:
+            print('--music needs the C++ engine: build tt_render (cmake --build build --target tt_render) or give --renderer')
+            return 1
+        files = []
+        for p in a.music:
+            if os.path.isdir(p):
+                for root, _, names in os.walk(p):
+                    files += [os.path.join(root, n) for n in sorted(names) if n.lower().endswith(('.wav', '.wave'))]
+            else:
+                files.append(p)
+        for f in files:
+            if os.path.abspath(f) == os.path.abspath(a.bounce):
+                continue
+            tape, speed, _ = parse_name(f)
+            if tape is None or speed is None:
+                print(f'  skipped music (no tape or speed in the name): {f}')
+                continue
+            music.setdefault((tape, speed), []).append(f)
     for f in skipped:
         print(f'  skipped (no tape or speed in the name): {f}')
     if a.only:
@@ -149,7 +204,8 @@ def main():
     for (tape, speed), g in sorted(groups.items()):
         n = os.path.basename(g.get('normal', '-- missing --'))
         h = os.path.basename(g.get('hot', '-- missing --'))
-        print(f'  {tape:8s} {speed:>4s} ips   normal: {n:40s} +6 dB: {h}')
+        print(f'  {tape:8s} {speed:>4s} ips   normal: {n:40s} +6 dB: {h}'
+              + (f'   music: {len(music[(tape, speed)])} passes' if (tape, speed) in music else ''))
     if a.dry_run:
         return 0
     os.makedirs(a.out, exist_ok=True)
@@ -165,14 +221,17 @@ def main():
         print('\n'.join(r['log']))
         print(f'  -> {"built " + r["model"] if r["ok"] else "FAILED: " + r["error"]} ({r["seconds"]:.0f} s)\n', flush=True)
 
+    def args(t, s_, g):
+        return (t, s_, g, a.out, channel, a.simulated, music.get((t, s_), ()), a.bounce, a.renderer, a.music_return)
+
     if a.jobs <= 1:
         for t, s_, g in todo:
-            report_one(run_one(t, s_, g, a.out, channel, a.simulated))
+            report_one(run_one(*args(t, s_, g)))
     else:
         done = set()
         try:
             with ProcessPoolExecutor(max_workers=a.jobs) as ex:
-                futs = {ex.submit(run_one, t, s_, g, a.out, channel, a.simulated): (t, s_) for t, s_, g in todo}
+                futs = {ex.submit(run_one, *args(t, s_, g)): (t, s_) for t, s_, g in todo}
                 for fu in as_completed(futs):
                     report_one(fu.result())
                     done.add(futs[fu])
@@ -181,7 +240,7 @@ def main():
             print('  a build process stopped (out of memory?); building the rest one at a time', flush=True)
             for t, s_, g in todo:
                 if (t, s_) not in done:
-                    report_one(run_one(t, s_, g, a.out, channel, a.simulated))
+                    report_one(run_one(*args(t, s_, g)))
     summary = {r['name']: {k: v for k, v in r.items() if k != 'log'} for r in results}
     with open(os.path.join(a.out, 'extract_summary.json'), 'w') as f:
         json.dump(summary, f, indent=1)

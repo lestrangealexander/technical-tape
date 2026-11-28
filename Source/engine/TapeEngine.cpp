@@ -124,7 +124,7 @@ void Core::allocate (int numChannels, const Limits& l)
         for (int k = 0; k < l.maxTreble; ++k)
         {
             auto& t = c.treble[k];
-            t.det.prepare (80, 0.9f);
+            t.det.prepare (80, 0.9f, l.maxRmsWindow, 1.0f);
             t.lraw.prepare (2048);
             t.conv.prepare (B, l.maxPartitions);
             t.lw.assign ((size_t) B, 0.0f);
@@ -155,6 +155,11 @@ void Core::configure (const PreparedModel* model, int osFactor)
     for (int ri = 1; ri < 5; ++ri)
         dUp[ri] = upDelay (ri) + (double) osf::kPadAtRate[ri] / (double) (1 << ri);
     shiftLw = osf::kLatency + pm->preDelay - (pm->lookAhead - 1);
+    for (size_t k = 0; k < pm->treble.size(); ++k)
+    {
+        const int w = pm->treble[k].rmsWindow;
+        shiftTreble[k] = shiftLw - std::min (w > 0 ? (w - 1) / 2 : 0, shiftLw);
+    }
     invRefPeak = 1.0f / pm->refPeak;
     for (auto& c : chans)
     {
@@ -180,7 +185,7 @@ void Core::configure (const PreparedModel* model, int osFactor)
             t.lp.setCoefficients (band.lpB, band.lpA);
             t.hpRest.setCoefficients (band.hpB, band.hpA);
             t.lpRest.setCoefficients (band.lpB, band.lpA);
-            t.det.prepare (pm->lookAhead, pm->releaseCoef);
+            t.det.prepare (pm->lookAhead, pm->releaseCoef, band.rmsWindow, band.peakMix);
             t.conv.setBranch (&band.branch);
         }
     }
@@ -375,7 +380,7 @@ void Core::processBlock (int ch, const float* x, float* y) noexcept
                 v += band.leak * (vp - r);
             }
             t.lraw.push (t.det.process (v));
-            t.lw[(size_t) i] = t.lraw.at ((double) (c.n - shiftLw));
+            t.lw[(size_t) i] = t.lraw.at ((double) (c.n - shiftTreble[k]));
         }
         ++c.n;
     }
@@ -679,7 +684,11 @@ void TapeEngine::prepare (double sampleRate, int, int channels)
             lim.maxCount = std::max (lim.maxCount, b.count);
         };
         for (const auto& b : m->branches) room (b);
-        for (const auto& band : m->treble) room (band.branch);
+        for (const auto& band : m->treble)
+        {
+            room (band.branch);
+            lim.maxRmsWindow = std::max (lim.maxRmsWindow, rmsWindowFor (band.rmsMs, fs));
+        }
         lim.maxTreble = std::max (lim.maxTreble, (int) m->treble.size());
         lim.maxPemp = std::max (lim.maxPemp, (int) std::lround (256.0 * fs / 48000.0));
         flutterSpecs.push_back (Flutter::makeSpec (*m));

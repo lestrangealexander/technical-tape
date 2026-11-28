@@ -9,12 +9,16 @@
         f32 weights[numLevels*count]
           mode 0: a basis of `count` kernels, mixed per level by the weights table
           mode 1: one kernel per detector level (count == numLevels), interpolated directly
-  TRBL  f32 fcLoHz [, f32 fcHiHz [, f32 leak]]
+  TRBL  f32 fcLoHz [, f32 fcHiHz [, f32 leak [, f32 rmsMs, f32 peakMix]]]
                                        (version 3+, optional, one per treble band, lowest first: the band's
                                         detector hears through a high-pass at fcLo and, if fcHi > 0, a
                                         low-pass at fcHi, plus `leak` times the rest of the shared
                                         detector's pre-emphasised signal (that signal less the same
-                                        band of it); version 3 files have fcLo only, version 4 no leak)
+                                        band of it); version 3 files have fcLo only, version 4 no leak,
+                                        version 5 no rmsMs. rmsMs > 0: the band's detector reads the
+                                        energy over a centred window of that length, scaled so a sine
+                                        reads its peak, instead of the peak envelope (0), mixed with
+                                        peakMix (0..1) of the peak envelope)
   BRHF  as BRCH, order 1: that band's share of the fundamental, indexed by its detector's level (the
         k-th BRHF belongs to the k-th TRBL)
   FLUT  i32 nPeaks, (f32 hz, f32 rmsSec)[nPeaks], i32 nCont, (f32 hz, f32 psd s^2/Hz)[nCont], f32 maxDelaySec
@@ -29,7 +33,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-VERSION = 5
+VERSION = 6
 
 
 @dataclass
@@ -45,6 +49,8 @@ class TrebleBand:
     fc_hi: float               # Hz: its low-pass, where the next band takes over (0 for the top band)
     branch: Branch
     leak: float = 0.0          # how much of the rest of the shared detector's signal its detector also hears
+    rms_ms: float = 0.0        # > 0: its detector reads the band's energy over this window (ms), not its peaks
+    peak_mix: float = 0.0      # ...mixed with this much (0..1) of its peak envelope
 
 
 @dataclass
@@ -107,7 +113,7 @@ def write(path, m: Model):
         out.append(_chunk('BRCH', branch_payload(b)))
     for tb in m.treble_bands:
         assert tb.branch.order == 1 and tb.fc_lo > 0
-        out.append(_chunk('TRBL', struct.pack('<fff', tb.fc_lo, tb.fc_hi, tb.leak)))
+        out.append(_chunk('TRBL', struct.pack('<fffff', tb.fc_lo, tb.fc_hi, tb.leak, tb.rms_ms, tb.peak_mix)))
         out.append(_chunk('BRHF', branch_payload(tb.branch)))
     fp, fc = np.asarray(m.flutter_peaks, float).reshape(-1, 2), np.asarray(m.flutter_cont, float).reshape(-1, 2)
     out.append(_chunk('FLUT', struct.pack('<i', len(fp)) + _f32(fp) + struct.pack('<i', len(fc)) + _f32(fc)
@@ -121,7 +127,7 @@ def write(path, m: Model):
 def read(path) -> Model:
     data = open(path, 'rb').read()
     assert data[:4] == b'TTM1', 'not a Technical Tape model'
-    assert struct.unpack_from('<I', data, 4)[0] in (2, 3, 4, 5), 'unsupported model version'
+    assert struct.unpack_from('<I', data, 4)[0] in (2, 3, 4, 5, 6), 'unsupported model version'
     treble_fc, treble_br = [], []
     pos = 8
     branches, kw = [], {}
@@ -152,7 +158,9 @@ def read(path) -> Model:
             lo = struct.unpack_from('<f', p)[0]
             hi = struct.unpack_from('<f', p, 4)[0] if len(p) >= 8 else 0.0
             lk = struct.unpack_from('<f', p, 8)[0] if len(p) >= 12 else 0.0
-            treble_fc.append((lo, hi, lk))
+            rm = struct.unpack_from('<f', p, 12)[0] if len(p) >= 16 else 0.0
+            pk = struct.unpack_from('<f', p, 16)[0] if len(p) >= 20 else 0.0
+            treble_fc.append((lo, hi, lk, rm, pk))
         elif tag == 'FLUT':
             k = struct.unpack_from('<i', p)[0]
             fp = np.frombuffer(p, '<f4', 2 * k, 4).reshape(k, 2).copy()
@@ -169,5 +177,5 @@ def read(path) -> Model:
             kw['meta'] = json.loads(p.decode('utf-8'))
     sr, rp, nl, l0, ls, nb, pd, la, rel, lo, hi, flags, margin = head
     assert len(treble_fc) == len(treble_br), 'treble bands and their branches do not pair up'
-    kw['treble_bands'] = [TrebleBand(lo_, hi_, br, lk_) for (lo_, hi_, lk_), br in zip(treble_fc, treble_br)]
+    kw['treble_bands'] = [TrebleBand(lo_, hi_, br, lk_, rm_, pk_) for (lo_, hi_, lk_, rm_, pk_), br in zip(treble_fc, treble_br)]
     return Model(sr, rp, l0, ls, nl, pd, la, rel, lo, hi, branches=branches, flags=flags, margin=margin, **kw)
