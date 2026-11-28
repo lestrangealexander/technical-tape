@@ -1,0 +1,19 @@
+prepareToPlay: 53 ms, latency 436 samples
+Technical Tape editor checks
+  ok    editor is 1000 x 660 at 100 %
+wrote D:\a\technical-tape\technical-tape\snap\tt_atr_15.png
+  ok    TAPE SELECT shows ATR / MAXELL, ATR chosen
+  ok    SPEED SELECT shows three speeds, 15 chosen
+  ok    the bottom row has only INPUT, AG and OUTPUT
+  ok    MAXELL selects the Maxell tape
+  ok    7½ IPS selects 7.5 ips
+wrote D:\a\technical-tape\technical-tape\snap\tt_maxell_7_5.png
+  ok    AG turns auto gain off
+  ok    3¾ IPS selects 3.75 ips
+  ok    ATR selects the ATR tape
+wrote D:\a\technical-tape\technical-tape\snap\tt_atr_375_ag_off_drive.png
+  ok    BYPASS engages
+wrote D:\a\technical-tape\technical-tape\snap\tt_bypass.png
+  ok    interface size 150 %
+wrote D:\a\technical-tape\technical-tape\snap\tt_150.png
+all good (0 failures)
