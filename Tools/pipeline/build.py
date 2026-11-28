@@ -732,14 +732,16 @@ def flutter_model(results):
 
 
 def auto_gain_table(model, log):
-    x = mc.pink(3.0, 0.0, 7)
-    lin = ds.k_loudness_db(x[FS // 2:])
+    """Auto gain: at each INPUT, the gain that keeps the output as loud (K-weighted) as at INPUT 0, on a
+    music-like loop (ds.program_loop). 0 dB at INPUT 0, so AG on or off sounds the same there. Up to 0.9.3
+    it was made on pink noise and matched the dry signal: pink noise has far more treble than music, and at
+    the slow speeds its treble collapses as the drive goes up, so music got louder with INPUT (3.75 ips:
+    +7.8 dB from -12 to +18 dB) and AG changed the level at INPUT 0 (3.75 ips: +2 to +3.5 dB)."""
+    x = ds.program_loop(6.0, FS)
     drives = np.arange(-18.0, 18.01, 1.5)
-    g = []
-    for d in drives:
-        y = re_.process(model, x, FS, drive_db=float(d), factor=4)
-        g.append(lin - ds.k_loudness_db(y[FS // 2:]))
-    return float(drives[0]), 1.5, np.array(g)
+    loud = np.array([ds.k_loudness_db(re_.process(model, x, FS, drive_db=float(d), factor=4)[FS // 2:])
+                     for d in drives])
+    return float(drives[0]), 1.5, loud[int(np.argmin(np.abs(drives)))] - loud
 
 
 # ------------------------------------------------------------------ 7. broadband calibration

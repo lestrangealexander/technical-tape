@@ -178,6 +178,64 @@ def treble_shares(freqs, bands):
     return main, [treble_split(freqs, lo) - treble_split(freqs, hi) for lo, hi in bands]
 
 
+def program_loop(sec=6.0, fs=48000, seed=3):
+    """A music-like loop for calibrating auto gain: kick, bass line, snare, hats, a cymbal wash and chords
+    at 100 bpm, equalised to a typical mix's long-term spectrum (per 1/3 octave re 63 Hz: 125 Hz -1, 250 Hz
+    -3, 500 Hz -6, 1 kHz -9, 2 kHz -12, 4 kHz -16, 8 kHz -21, 16 kHz -29 dB), -18 dBFS RMS (0 VU).
+    Pink noise has far more treble than music; this has a mix's balance and dynamics. Deterministic."""
+    n = int(fs * sec)
+    t = np.arange(n) / fs
+    rng = np.random.default_rng(seed)
+    beat = 0.6
+
+    def env(t0, dec, length):
+        e = np.zeros(n)
+        i0 = int(t0 * fs)
+        m = min(n - i0, int(length * fs))
+        if m > 0:
+            e[i0:i0 + m] = np.exp(-np.arange(m) / fs / dec)
+        return e
+
+    def filt(x, kind, f, order=2):
+        return ss.sosfilt(ss.butter(order, f, kind, fs=fs, output='sos'), x)
+
+    kick, snare, hats, bass, chords = (np.zeros(n) for _ in range(5))
+    for k in range(int(sec / beat) + 1):
+        tb = k * beat
+        if k % 2 == 0:
+            i0 = int(tb * fs)
+            m = min(n - i0, int(0.35 * fs))
+            if m > 0:
+                tt = np.arange(m) / fs
+                kick[i0:i0 + m] += (np.sin(2 * np.pi * (50 * tt + 1.8 * (1 - np.exp(-tt / 0.03))))
+                                    * np.exp(-tt / 0.12))
+        else:
+            snare += (filt(rng.standard_normal(n), 'bandpass', [180, 6000]) * env(tb, 0.08, 0.3) * 0.6
+                      + np.sin(2 * np.pi * 190 * t) * env(tb, 0.05, 0.2) * 0.4)
+        for h in range(2):
+            hats += filt(rng.standard_normal(n), 'highpass', 7000, 4) * env(tb + h * beat / 2, 0.03 if h else 0.06, 0.2)
+    for k in range(int(sec / (2 * beat)) + 1):
+        f0 = (41.2, 41.2, 55.0, 49.0)[k % 4]
+        saw = sum(np.sin(2 * np.pi * f0 * m * t) / m for m in range(1, 12))
+        bass += filt(saw, 'lowpass', 600) * env(k * 2 * beat, 1.2, 2 * beat)
+    for k in range(int(sec / (4 * beat)) + 1):
+        for f0 in ((220, 277.2, 329.6), (196, 246.9, 293.7), (174.6, 220, 261.6))[k % 3]:
+            chords += sum(np.sin(2 * np.pi * f0 * m * t + rng.uniform(0, 6.28)) * 0.6 ** m
+                          for m in range(1, 10)) * env(k * 4 * beat, 3.0, 4 * beat)
+    wash = filt(rng.standard_normal(n), 'highpass', 4000) * (0.5 + 0.5 * np.abs(np.sin(np.pi * t / (8 * beat))))
+    mix = kick + 0.5 * bass + 0.5 * snare + 0.12 * hats + 0.05 * chords + 0.035 * wash
+    # equalise to the target long-term spectrum, keeping the dynamics
+    cent = np.array([31.5, 63, 125, 250, 500, 1000, 2000, 4000, 8000, 12500, 16000, 20000])
+    target = np.array([-4, 0, -1, -3, -6, -9, -12, -16, -21, -25, -29, -35.0])
+    f, p = ss.welch(mix, fs, nperseg=8192)
+    cur = np.array([10 * np.log10(np.sum(p[(f >= c * 2 ** (-1 / 6)) & (f < c * 2 ** (1 / 6))]) + 1e-30) for c in cent])
+    gain_db = np.clip(target - (cur - cur[1]), -40, 40)
+    fr = np.concatenate([[0], cent, [fs / 2]]) / (fs / 2)
+    h = ss.firwin2(4097, fr, 10 ** (np.concatenate([[gain_db[0]], gain_db, [gain_db[-1]]]) / 20))
+    mix = ss.fftconvolve(mix, h, 'same')
+    return mix * 10 ** (-18 / 20) / np.sqrt(np.mean(mix ** 2))
+
+
 def k_loudness_db(x):
     y = ss.sosfilt(K_SOS_48K, x)
     return 10 * np.log10(np.mean(y ** 2) + 1e-30)
