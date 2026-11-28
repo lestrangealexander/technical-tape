@@ -1,7 +1,8 @@
 # Recording the captures
 
 Twelve files make the six models: two tapes (ATR, Maxell) × three speeds (3¾, 7½, 15 ips) ×
-two passes (normal and hot). All twelve are in (November 2026). Maxell 15 ips came with two normal
+two passes (normal and hot), and eighteen music recordings fit their treble (below). All are in
+(November 2026). Maxell 15 ips came with two normal
 passes; the second (`MAXELL_15ips_0dB_V2.wav`) is used. It is the better take: its noise floor is
 3.7 dB lower (−80.3 against −76.6 dBFS), it has less wow and flutter (0.026 % against 0.033 %
 unweighted 2σ; largest de-warp correction 59 against 95 µs), its sweeps agree with each other
@@ -81,12 +82,46 @@ The names are read loosely: `7½`, `7,5` or `7_5` work for 7.5, `3¾` for 3.75, 
 `hot` or `plus6` mark the hot pass (an upload that turns `+` into `_`, as in `ATR_15ips__6dB.wav`,
 still reads right).
 
+## Music captures
+
+Steady tones fix every kernel, and pink noise checks dense material, but neither says how a real mix's
+highs move as the level goes up: pink noise has far more treble than any mix, so it saturates the
+highs at the wrong levels. A mix through the machine does. These are made for each tape and speed
+(eighteen files, recorded November 2026: they decide the treble stage of every model since 0.9.4).
+
+1. Make the template: `python3 Tools/capture/make_music_capture.py "Technical Tape Music Capture 96k 24-bit.wav"`.
+   It has a 1 kHz tone at 0 VU, a 1 kHz tone at −20 VU (it gives each pass's level), the main
+   capture's 0 VU pink noise (it checks the session against the main capture), sync bursts at 0:27 and
+   1:32, and a 60 s gap at 0:30 for the music.
+2. Paste a mono mix into the gap, its loud parts about 0 VU, and bounce it (the "digital bounce": the
+   pipeline needs this exact file).
+3. Record it through the machine, calibrated as for the main capture, at three levels: about −10, 0
+   and +10 dB into the machine. Turn the level into the machine, never the return: the return stays
+   as calibrated, so the pipeline reads each pass's level from its −20 VU tone. A pass can go far
+   hotter than +10 dB (these went in at +17.8 to +19.1 dB: the DAW at −10 dB and the machine's
+   input at full); that is fine, it is measured.
+4. Name the files like the captures, with the level: `MUSIC_ATR_3.75ips_-10dB.wav`,
+   `MUSIC_ATR_3.75ips_0dB.wav`, `MUSIC_ATR_3.75ips_10dB.wav` …
+
+`extract.py` takes them with `--music <folder> --bounce <the digital bounce>`. For each recording it
+lines the music up with the bounce (the two sync bursts, and any speed difference), takes the
+machine's wow and flutter out, measures the level onto the tape, the machine's own noise (the
+silence before the first sync burst) and, for the 0 dB pass, how the machine sat that day against
+the main capture (the 0 VU pink noise, less the pass's level). The fit then plays the bounce's
+music through the model at each pass's level and compares it with the machine's, 1/3 octave by 1/3
+octave (section 4 of `docs/DESIGN.md`).
+
 ## From captures to the plugin
 
 ```
 python3 Tools/pipeline/extract.py <folder with the 12 files> -o Resources/Models --dry-run   # check the names were read right
-python3 Tools/pipeline/extract.py <folder with the 12 files> -o Resources/Models
+python3 Tools/pipeline/extract.py <folder with the 12 files> -o Resources/Models \
+        --music <folder with the music recordings> --bounce <the digital bounce>
 ```
+
+The music fit runs the C++ engine: build `tt_render` first (`cmake --build build --target tt_render`;
+`extract.py` finds it in `build*/`, or give `--renderer`). Without `--music` the treble stage is
+fitted on the pink noise, as up to 0.9.3.
 
 For each tape and speed this writes `ATR_15.ttm` (etc.) and `ATR_15_report.html`, a QC page
 with the calibration, warnings, responses, compression curves, harmonics, the pre-emphasis

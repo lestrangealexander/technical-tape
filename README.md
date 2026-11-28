@@ -11,10 +11,11 @@ measured wow and flutter, and a saturation curve that keeps going past the hotte
 **Status:** all six models, ATR and Maxell at 3¾, 7½ and 15 ips, are built from the real captures,
 measured from −30 VU to about +35 VU: the hot passes went onto the tape about 22½ dB above the
 normal ones, so the whole drive range of the INPUT knob is measured rather than extrapolated. A
-treble stage lets the highs saturate on their own level and on how loud everything else is, as on
-tape (in two bands at 3¾ ips, where the top octave saturates apart from the octave below it). Its
-fit matches the part of the machine's treble that still follows the input, so the plugin's highs
-are no brighter than the machine's when driven. MENU > Tape models shows what each model is.
+treble stage lets the highs saturate on their own level, as on tape (in two bands at 3¾ and 7½ ips,
+where the top octave saturates apart from the octave below it), reading the highs' energy as well as
+their peaks. It is fitted to a mix recorded through the machine at three levels on every tape and
+speed (−10, 0 and about +19 dB onto the tape), so the top end moves with INPUT as the machine's does
+on music. MENU > Tape models shows what each model is.
 
 The Mac build is AU and VST3, universal for Apple Silicon and Intel, and needs macOS 11 or later.
 The Windows build is a 64-bit VST3 for Windows 10 or 11. Builds are for personal use, so they are
@@ -59,7 +60,7 @@ Presets are stored in `~/Library/Audio/Presets/Sound Aquarium/Technical Tape` (M
 | 3¾ / 7½ / 15 | tape speed |
 | INPUT | how hard the tape is driven (−18 … +18 dB); 0 VU = −18 dBFS RMS. At 15 ips the ATR stays under 1 % distortion to about +6 VU, saturates from +9 VU and is close to square-wave clipping above +25 VU; all of it is measured |
 | OUTPUT | output level (−18 … +18 dB) |
-| AG | auto gain: holds the loudness as INPUT changes (on by default) |
+| AG | auto gain: holds the loudness as INPUT changes, so only the saturation changes (on by default; at INPUT 0 it changes nothing) |
 | BYPASS | latency-matched, click-free bypass |
 | OS | oversampling 1X … 16X (default 8X: alias-free for every harmonic) |
 | MENU | presets, wow & flutter amount (0–200 %, default as measured), interface size, model info |
@@ -95,7 +96,9 @@ python3 Tools/pipeline/extract.py <folder of WAVs> -o Resources/Models --dry-run
 python3 Tools/pipeline/extract.py <folder of WAVs> -o Resources/Models
 ```
 
-Each tape and speed gets a `.ttm` model and an HTML QC report. Rebuild the plugin, or drop the
+With music recorded through the machine (`docs/CAPTURES.md`), add `--music <folder> --bounce <the
+digital bounce>`: the treble stage is then fitted to the music (this runs `tt_render`, so build it
+first). Each tape and speed gets a `.ttm` model and an HTML QC report. Rebuild the plugin, or drop the
 `.ttm` files into the user models folder (`~/Library/Application Support/Sound Aquarium/Technical
 Tape/Models` on a Mac, `%APPDATA%\Sound Aquarium\Technical Tape\Models` on Windows) to use them
 straight away. A tape lights up in TAPE SELECT as soon as one of its models is there. Python 3.10+
@@ -107,7 +110,7 @@ with numpy, scipy and matplotlib. `docs/CAPTURES.md` says how to record the capt
 |---|---|
 | `Tests/validate_capture.py <model> <normal.wav> <hot.wav>` | a model against its own captures: the 1 kHz and 3.15 kHz tones of both passes (level, harmonics, waveform match) |
 | `Tests/validate_model.py <model> <tape> <speed>` | a model against the virtual machine: sines by level, pink-noise bands, two-tone IMD, transient null |
-| `Tests/compare_engine.py <model> <tt_render>` | the C++ engine against the Python reference, sample by sample (−103 dB) |
+| `Tests/compare_engine.py <model> <tt_render>` | the C++ engine against the Python reference, sample by sample (−110 dB on the real models) |
 | `Tests/engine_checks.py <tt_render> <model> [<model2>]` | aliasing by OS factor, clicks when switching, wow & flutter spectrum |
 
 ## Layout

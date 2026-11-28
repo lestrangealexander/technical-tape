@@ -571,12 +571,14 @@ def treble_layouts(speed):
     highs saturate on their own in two places, with the top octave (10 kHz and up) apart from the octave
     below it, so it gets two bands: 5-10 kHz and 10 kHz up, or 4-8 kHz and 8 kHz up. (One band from 2.5
     kHz, as in 0.9.1, leaves 2.5-6 kHz too loud and the top octave too quiet on pink noise; a second band
-    from 2.5 kHz splits the top, but still mis-weights 2.5-6 kHz.) The second band costs CPU, and only the
-    selected speed's model runs, so it costs nothing at 7.5 or 15 ips; its kernels are as short as
-    treble_kernels allows."""
+    from 2.5 kHz splits the top, but still mis-weights 2.5-6 kHz.) At 7.5 ips two bands, 5-10 kHz and 10
+    kHz up, are tried as well: on a mix driven hard, one band from 5 kHz left 6-10 kHz too bright. The
+    second band costs CPU, and only the selected speed's model runs, so it costs nothing at 15 ips; its
+    kernels are as short as treble_kernels allows."""
     s = float(speed) / 15.0
     if float(speed) > 3.8:
-        return (((5000.0 * s, 0.0),), ((10000.0 * s, 0.0),))
+        one = (((5000.0 * s, 0.0),), ((10000.0 * s, 0.0),))
+        return one + ((((5000.0, 10000.0), (10000.0, 0.0)),) if float(speed) < 10.0 else ())
     base = 10000.0 * s
     return tuple(((lo, 2.0 * lo), (2.0 * lo, 0.0)) for lo in (2.0 * base, 1.6 * base))
 
